@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Status**: ✅ Search functionality is fully working as of last update. If searches aren't submitting or results aren't extracting, check the **Nodriver-Specific Gotchas** section below first!
+
 ## Project Overview
 
 GEO-Perplex is a Python-based automation tool for researching Generative Engine Optimization (GEO) using Perplexity.ai. GEO is an emerging field analogous to SEO - where SEO focused on product placement in search engines like Google, GEO is concerned with the likelihood an LLM suggests your product.
@@ -88,10 +90,14 @@ See `auth.json.example` for format.
 ### Search Process
 
 1. Find search input using multiple selectors (line 181-200)
-2. Click to focus, type query, submit with Enter (line 207-216)
-3. Wait for answer generation (~20 seconds, line 230)
-4. Extract results from main content area (line 240-296)
-5. Take screenshot for debugging (line 235)
+2. Click to focus, type query (line 207-213)
+3. Submit search with triple fallback approach (line 215-251):
+   - Send `\n` character (NOT the text "Enter")
+   - Send CDP Enter key event as backup
+   - Click search button as final fallback
+4. Wait for search initiation and content stabilization (line 260-336)
+5. Extract results using `.text_all` property (line 363-460)
+6. Take screenshot for debugging (line 361)
 
 ### Cookie Injection (lines 80-121)
 
@@ -100,12 +106,40 @@ Uses Nodriver's CDP to inject cookies with proper parameters:
 - Converts cookie format to CDP `network.set_cookie()` format
 - Uses `uc.cdp.network.CookieSameSite` and `TimeSinceEpoch` types
 
-### Result Extraction Challenges
+### Result Extraction Approach
 
-Perplexity's UI structure changes frequently. The tool uses multiple fallback methods:
-- Method 1: Extract from `main` content area, clean navigation text (line 242)
-- Method 2: Try `[data-testid*="answer"]` containers (line 263)
-- Sources extracted from `[data-testid*="source"] a` elements (line 278)
+The tool extracts answer text from Perplexity's dynamic UI:
+- Uses `element.text_all` property (NOT `element.text`) to get all descendant text
+- **Important**: `.text_all` concatenates text with spaces, not newlines
+- Extracts content between markers:
+  - Start: After "1 step completed" or "answer images"
+  - End: Before "ask a follow-up"
+- Sources extracted from `[data-testid*="source"] a` elements
+
+## Nodriver-Specific Gotchas
+
+### Critical: Keyboard Input Handling
+- **`send_keys('Enter')` will type the literal text "Enter"** - it does NOT press the Enter key!
+- Use `send_keys('\n')` or `send_keys('\r\n')` to press Enter
+- For maximum reliability, also send CDP key events:
+  ```python
+  await page.send(uc.cdp.input_.dispatch_key_event(
+      type_='keyDown', key='Enter', code='Enter',
+      windows_virtual_key_code=13, native_virtual_key_code=13
+  ))
+  ```
+
+### Critical: Text Property Access
+- `.text` and `.text_all` are **synchronous properties**, NOT async methods
+- ❌ Wrong: `await element.text` or `await element.text_all`
+- ✅ Correct: `element.text` or `element.text_all`
+- `.text` only returns direct text content (often empty for container elements)
+- `.text_all` returns ALL descendant text concatenated with spaces (not newlines!)
+
+### Why These Matter
+- Nodriver behaves differently from Selenium/Playwright in these areas
+- These issues cause silent failures - no errors, just wrong behavior
+- The Enter key issue makes searches appear to work but not actually submit
 
 ## Limitations and Gotchas
 

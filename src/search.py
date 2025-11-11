@@ -212,8 +212,62 @@ async def perform_search(page, query: str) -> None:
         await search_input.send_keys(query)
         print(f'✓ Query entered: "{query}"')
 
-        # Submit the search (press Enter)
+        # Submit the search (press Enter key)
+        # First try regular newline
         await search_input.send_keys('\n')
+        print('✓ Sent newline character')
+
+        # Alternative: Try using CDP to send Enter key event directly
+        try:
+            await page.send(uc.cdp.input_.dispatch_key_event(
+                type_='keyDown',
+                key='Enter',
+                code='Enter',
+                windows_virtual_key_code=13,
+                native_virtual_key_code=13
+            ))
+            await page.send(uc.cdp.input_.dispatch_key_event(
+                type_='keyUp',
+                key='Enter',
+                code='Enter',
+                windows_virtual_key_code=13,
+                native_virtual_key_code=13
+            ))
+            print('✓ Sent Enter key event via CDP')
+        except Exception as e:
+            print(f'   CDP Enter key fallback: {e}')
+
+        # Wait for search to register
+        await asyncio.sleep(1.5)
+
+        # Fallback: Try clicking search button if Enter didn't work
+        try:
+            # Look for search/submit button
+            search_button_selectors = [
+                'button[type="submit"]',
+                'button[aria-label*="search" i]',
+                'button[aria-label*="submit" i]',
+                'button[title*="search" i]',
+                'button svg',  # Sometimes the search icon is in a button
+                'button[class*="search" i]'
+            ]
+
+            search_button = None
+            for selector in search_button_selectors:
+                try:
+                    search_button = await page.select(selector, timeout=2)
+                    if search_button:
+                        print(f'   Found search button with selector: {selector}')
+                        await search_button.click()
+                        print('   ✓ Clicked search button as fallback')
+                        break
+                except:
+                    continue
+
+        except Exception as e:
+            # Fallback failed, but that's OK if Enter worked
+            print(f'   Note: Search button fallback not needed or not found')
+
         print('✓ Search submitted')
 
     except Exception as error:
@@ -223,11 +277,83 @@ async def perform_search(page, query: str) -> None:
 async def extract_search_results(page) -> Dict:
     """Extract search results from the page"""
     try:
+        print('   Checking if search initiated...')
+
+        # First, verify that the search actually started
+        # Look for loading indicators
+        max_wait_for_start = 10  # seconds
+        search_started = False
+        start_time = asyncio.get_event_loop().time()
+
+        while (asyncio.get_event_loop().time() - start_time) < max_wait_for_start:
+            # Check for various indicators that search has started
+            indicators = [
+                # URL change
+                lambda: page.url and '/search' in page.url,
+                # Loading text
+                lambda: page.select('[class*="thinking" i]', timeout=1),
+                lambda: page.select('[class*="loading" i]', timeout=1),
+                lambda: page.select('[class*="generating" i]', timeout=1),
+                # Spinner or animation
+                lambda: page.select('[class*="spinner" i]', timeout=1),
+                lambda: page.select('[class*="animate" i]', timeout=1),
+                # Answer container appearing (even if empty)
+                lambda: page.select('[data-testid*="answer"]', timeout=1),
+                lambda: page.select('main [class*="response" i]', timeout=1)
+            ]
+
+            for check in indicators:
+                try:
+                    result = await check()
+                    if result:
+                        search_started = True
+                        print(f'   ✓ Search initiated (detected indicator)')
+                        break
+                except:
+                    continue
+
+            if search_started:
+                break
+
+            await asyncio.sleep(0.5)
+
+        if not search_started:
+            print('   ⚠ Warning: Could not confirm search started, proceeding anyway...')
+
         print('   Waiting for answer to be generated...')
 
-        # Simple approach: wait a fixed time for results to generate
-        # Perplexity typically takes 10-30 seconds to generate answers
-        await asyncio.sleep(20)
+        # Now wait for the answer to be fully generated
+        # Use a smarter approach: wait until content stabilizes
+        max_wait_time = 30  # Maximum seconds to wait
+        check_interval = 2  # Check every 2 seconds
+        stable_checks = 0
+        last_content_length = 0
+
+        start_time = asyncio.get_event_loop().time()
+        while (asyncio.get_event_loop().time() - start_time) < max_wait_time:
+            # Check if there's content and if it's stable
+            try:
+                main_content = await page.select('main', timeout=2)
+                if main_content:
+                    current_text = await main_content.text
+                    current_length = len(current_text) if current_text else 0
+
+                    # Check if content has stabilized (no change for 2 checks)
+                    if current_length > 100 and current_length == last_content_length:
+                        stable_checks += 1
+                        if stable_checks >= 2:
+                            print(f'   ✓ Answer generation complete (content stable)')
+                            break
+                    else:
+                        stable_checks = 0
+                        last_content_length = current_length
+            except:
+                pass
+
+            await asyncio.sleep(check_interval)
+
+        # Additional short wait to ensure everything is rendered
+        await asyncio.sleep(2)
 
         print('   ✓ Extracting results...')
 
@@ -237,38 +363,75 @@ async def extract_search_results(page) -> Dict:
         # Extract the main answer/response
         answer_text = ''
 
-        # Method 1: Try to get all text from main content area
+        # Method 1: Simple approach - get all text from main and clean it
         try:
-            main_content = await page.select('main')
-            if main_content:
-                full_text = await main_content.text
+            # Wait a bit more for content to fully render
+            await asyncio.sleep(3)
+
+            main_element = await page.select('main')
+            if main_element:
+                # Get all text content including children (text_all gets all descendants)
+                full_text = main_element.text_all
+                print(f'   Debug: Full main text length: {len(full_text) if full_text else 0}')
+
                 if full_text:
-                    # Remove navigation/UI text
-                    cleaned = full_text
-                    cleaned = cleaned.replace('HomeHomeDiscoverSpacesFinance', '')
-                    cleaned = cleaned.replace('Install', '')
-                    cleaned = cleaned.replace('Ask a follow-up', '')
-                    cleaned = cleaned.replace('Answer', '')
-                    cleaned = cleaned.replace('Thinking...', '')
-                    cleaned = cleaned.strip()
+                    # text_all concatenates with spaces, so we need a different approach
+                    # Look for the answer portion between known markers
+                    text_lower = full_text.lower()
 
-                    if len(cleaned) > 50:
-                        answer_text = cleaned
-        except:
-            pass
+                    # Find where answer starts (after "1 step completed" or "answer images")
+                    start_idx = -1
+                    start_markers = ['1 step completed', 'answer images', 'images ']
+                    for marker in start_markers:
+                        idx = text_lower.find(marker)
+                        if idx > 0:
+                            start_idx = idx + len(marker)
+                            break
 
-        # Method 2: If that didn't work, try answer container
-        if not answer_text or len(answer_text) < 50:
-            try:
-                answer_containers = await page.select_all('[data-testid*="answer"]')
-                for container in answer_containers:
-                    container_text = await container.text
-                    if container_text and len(container_text) > 20:
-                        answer_text = container_text
-                        answer_text = answer_text.replace('Answer', '')
-                        answer_text = answer_text.replace('Thinking...', '')
+                    # Find where answer ends (before "ask a follow-up")
+                    end_idx = len(full_text)
+                    end_markers = ['ask a follow-up', 'ask follow-up']
+                    for marker in end_markers:
+                        idx = text_lower.find(marker, start_idx if start_idx > 0 else 0)
+                        if idx > 0:
+                            end_idx = min(end_idx, idx)
+
+                    if start_idx > 0 and start_idx < end_idx:
+                        answer_text = full_text[start_idx:end_idx].strip()
+
+                        # Clean up any remaining UI elements
+                        ui_elements = ['Home Discover', 'Spaces Finance', 'Upgrade Install', 'Answer Images']
+                        for ui_elem in ui_elements:
+                            answer_text = answer_text.replace(ui_elem, '')
+
                         answer_text = answer_text.strip()
-                        break
+                        if answer_text:
+                            print(f'   Found answer text ({len(answer_text)} chars)')
+
+
+        except Exception as e:
+            print(f'   Error extracting answer: {e}')
+
+        # Method 2: If no answer found, try getting all text from main
+        if not answer_text:
+            try:
+                main_content = await page.select('main')
+                if main_content:
+                    full_text = main_content.text_all
+                    if full_text and len(full_text) > 200:
+                        # Remove known UI elements and clean up
+                        lines = full_text.split('\n')
+                        cleaned_lines = []
+                        skip_patterns = ['Home', 'Discover', 'Spaces', 'Finance', 'Install',
+                                       'Upgrade', 'Account', 'Ask a follow-up', 'Thinking...']
+
+                        for line in lines:
+                            line = line.strip()
+                            if line and not any(pattern in line for pattern in skip_patterns):
+                                cleaned_lines.append(line)
+
+                        if cleaned_lines:
+                            answer_text = '\n'.join(cleaned_lines)
             except:
                 pass
 
