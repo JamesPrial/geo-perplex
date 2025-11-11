@@ -4,21 +4,50 @@ Authenticates using cookies and performs a search query
 """
 import sys
 import asyncio
+import time
+import hashlib
+from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Optional
 import nodriver as uc
 from src.utils.cookies import load_cookies, validate_auth_cookies
+from src.utils.storage import save_search_result
 
 
 async def main():
     """Main search automation function"""
     browser = None
+    start_time = time.time()
+    success = True
+    error_message = None
 
     try:
-        # Get search query from command line arguments
-        search_query = sys.argv[1] if len(sys.argv) > 1 else 'What is Generative Engine Optimization?'
+        # Parse command line arguments
+        # Usage: python -m src.search "query" [--model MODEL] [--no-screenshot]
+        search_query = 'What is Generative Engine Optimization?'
+        model = None
+        save_screenshot = True  # Default: save screenshots
+
+        # Simple argument parsing
+        args = sys.argv[1:]
+        i = 0
+        while i < len(args):
+            if args[i] == '--model' and i + 1 < len(args):
+                model = args[i + 1]
+                i += 2
+            elif args[i] == '--no-screenshot':
+                save_screenshot = False
+                i += 1
+            else:
+                search_query = args[i]
+                i += 1
+
         print('\n🔍 Perplexity.ai Search Automation')
         print('================================\n')
-        print(f'Query: "{search_query}"\n')
+        print(f'Query: "{search_query}"')
+        if model:
+            print(f'Model: {model}')
+        print()
 
         # Step 1: Load and validate cookies
         print('📋 Loading authentication cookies...')
@@ -61,13 +90,58 @@ async def main():
 
         # Step 7: Wait for and extract results
         print('⏳ Waiting for search results...\n')
-        results = await extract_search_results(page)
+
+        # Generate unique screenshot filename (only if screenshots are enabled)
+        screenshot_path = None
+        if save_screenshot:
+            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            query_hash = hashlib.md5(search_query.encode()).hexdigest()[:8]
+            screenshot_dir = Path('screenshots')
+            screenshot_dir.mkdir(exist_ok=True)
+            screenshot_path = screenshot_dir / f'{timestamp_str}_{query_hash}.png'
+
+        results = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
 
         # Step 8: Display results
         display_results(results)
 
+        # Step 9: Save to database
+        execution_time = time.time() - start_time
+        print(f'\n💾 Saving results to database...')
+        result_id = save_search_result(
+            query=search_query,
+            answer_text=results['answer'],
+            sources=results['sources'],
+            screenshot_path=str(screenshot_path) if screenshot_path else None,
+            model=model,
+            execution_time=execution_time,
+            success=success,
+            error_message=error_message
+        )
+        print(f'✓ Saved as record ID: {result_id}')
+        print(f'✓ Execution time: {execution_time:.2f}s')
+
     except Exception as error:
         print(f'\n❌ Error: {str(error)}')
+        success = False
+        error_message = str(error)
+
+        # Save failed result to database
+        execution_time = time.time() - start_time
+        try:
+            save_search_result(
+                query=search_query if 'search_query' in locals() else 'Unknown',
+                answer_text='',
+                sources=[],
+                screenshot_path=None,
+                model=model if 'model' in locals() else None,
+                execution_time=execution_time,
+                success=False,
+                error_message=error_message
+            )
+        except:
+            pass  # Don't fail if database save fails
+
         raise
     finally:
         # Cleanup
@@ -274,7 +348,7 @@ async def perform_search(page, query: str) -> None:
         raise Exception(f'Failed to perform search: {str(error)}')
 
 
-async def extract_search_results(page) -> Dict:
+async def extract_search_results(page, screenshot_path: Optional[str]) -> Dict:
     """Extract search results from the page"""
     try:
         print('   Checking if search initiated...')
@@ -357,8 +431,10 @@ async def extract_search_results(page) -> Dict:
 
         print('   ✓ Extracting results...')
 
-        # Take screenshot for debugging
-        await page.save_screenshot('search-results-screenshot.png', full_page=True)
+        # Take screenshot for debugging (if enabled)
+        if screenshot_path:
+            await page.save_screenshot(screenshot_path, full_page=True)
+            print(f'   📸 Screenshot saved: {screenshot_path}')
 
         # Extract the main answer/response
         answer_text = ''

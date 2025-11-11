@@ -11,3 +11,8 @@ __pycache__/
 *.pyo
 *.egg-info
 .pytest_cache/
+
+# Search results storage
+search_results.db
+screenshots/
+search-results-screenshot.png
