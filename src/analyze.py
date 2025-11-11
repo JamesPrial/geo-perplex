@@ -3,6 +3,7 @@ Analysis and comparison script for search results
 Query and compare Perplexity search results across models and time
 """
 import sys
+import os
 import argparse
 from datetime import datetime
 from typing import Dict, List
@@ -14,6 +15,7 @@ from src.utils.storage import (
     get_unique_queries,
     get_unique_models
 )
+from src.utils.json_export import export_database_to_json
 
 
 def format_timestamp(timestamp_str: str) -> str:
@@ -171,6 +173,31 @@ def compare_models(args) -> None:
                     print(f"  {line}")
 
 
+def export_results(args) -> None:
+    """Export search results to JSON file"""
+    if not args.output:
+        print("❌ Error: --output is required")
+        return
+
+    try:
+        summary = export_database_to_json(
+            output_path=args.output,
+            query_filter=args.query,
+            model_filter=args.model,
+            limit=args.limit
+        )
+        print(f"\n✅ Export Complete!")
+        print(f"Records exported: {summary['records_exported']}")
+        print(f"File size: {summary['file_size_bytes']:,} bytes")
+        print(f"Output path: {summary['output_path']}")
+    except ValueError as e:
+        print(f"❌ Error: {e}")
+    except IOError as e:
+        print(f"❌ File error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
+
 def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
@@ -198,6 +225,18 @@ Examples:
 
   # Compare models for a specific query
   python -m src.analyze compare --query "What is Python?" --full
+
+  # Export all recent results to JSON
+  python -m src.analyze export --output results.json
+
+  # Export results for a specific query
+  python -m src.analyze export --output query_results.json --query "What is Python?"
+
+  # Export results for a specific model
+  python -m src.analyze export --output gpt4_results.json --model gpt-4
+
+  # Export with limit
+  python -m src.analyze export --output recent.json --limit 100
         """
     )
 
@@ -236,6 +275,15 @@ Examples:
     parser_compare.add_argument('--query', required=True, help='Query to compare')
     parser_compare.add_argument('--full', action='store_true', help='Show full answer text')
     parser_compare.set_defaults(func=compare_models)
+
+    # export command
+    parser_export = subparsers.add_parser('export', help='Export search results to JSON')
+    parser_export.add_argument('--output', '-o', required=True,
+                               help='Output JSON file path')
+    parser_export.add_argument('--query', help='Filter by query text')
+    parser_export.add_argument('--model', help='Filter by model name')
+    parser_export.add_argument('--limit', type=int, help='Limit number of results')
+    parser_export.set_defaults(func=export_results)
 
     args = parser.parse_args()
 

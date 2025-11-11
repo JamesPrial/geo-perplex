@@ -4,9 +4,12 @@ Manages SQLite database for storing and querying Perplexity search results
 """
 import sqlite3
 import json
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 # Database file location
@@ -144,7 +147,11 @@ def get_results_by_query(query: str, model: Optional[str] = None) -> List[Dict]:
     results = []
     for row in rows:
         result = dict(row)
-        result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        try:
+            result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse sources JSON for result ID {result.get('id')}: {e}")
+            result['sources'] = []
         results.append(result)
 
     return results
@@ -178,7 +185,11 @@ def get_results_by_model(model: str, limit: int = 50) -> List[Dict]:
     results = []
     for row in rows:
         result = dict(row)
-        result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        try:
+            result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse sources JSON for result ID {result.get('id')}: {e}")
+            result['sources'] = []
         results.append(result)
 
     return results
@@ -211,7 +222,11 @@ def compare_models_for_query(query: str) -> Dict[str, List[Dict]]:
     results_by_model = {}
     for row in rows:
         result = dict(row)
-        result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        try:
+            result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse sources JSON for result ID {result.get('id')}: {e}")
+            result['sources'] = []
 
         model = result['model'] or 'unknown'
         if model not in results_by_model:
@@ -247,7 +262,11 @@ def get_recent_results(limit: int = 50) -> List[Dict]:
     results = []
     for row in rows:
         result = dict(row)
-        result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        try:
+            result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse sources JSON for result ID {result.get('id')}: {e}")
+            result['sources'] = []
         results.append(result)
 
     return results

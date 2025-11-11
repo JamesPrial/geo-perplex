@@ -3,6 +3,7 @@ Main search automation script for Perplexity.ai
 Authenticates using cookies and performs a search query
 """
 import sys
+import argparse
 import asyncio
 import time
 import hashlib
@@ -13,6 +14,7 @@ from typing import Dict
 
 from src.utils.cookies import load_cookies, validate_auth_cookies
 from src.utils.storage import save_search_result
+from src.utils.json_export import save_result_to_json
 from src.config import SCREENSHOT_CONFIG, LOGGING_CONFIG, MODEL_MAPPING
 
 # Import from new modular structure
@@ -32,6 +34,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def parse_arguments() -> argparse.Namespace:
+    """
+    Parse command line arguments using argparse.
+
+    Returns:
+        Namespace object with parsed arguments
+    """
+    parser = argparse.ArgumentParser(
+        description='Perplexity.ai Search Automation with GEO Research',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Examples:\n'
+               '  python -m src.search_cli\n'
+               '  python -m src.search_cli "What is GEO?"\n'
+               '  python -m src.search_cli "What is GEO?" --model gpt-4\n'
+               '  python -m src.search_cli "What is GEO?" --save-json --json-output-dir ./results'
+    )
+
+    parser.add_argument(
+        'query',
+        nargs='?',
+        default='What is Generative Engine Optimization?',
+        help='Search query to execute (default: "What is Generative Engine Optimization?")'
+    )
+
+    parser.add_argument(
+        '--model',
+        help='AI model to select (e.g., gpt-4, claude-3, sonar-pro)'
+    )
+
+    parser.add_argument(
+        '--no-screenshot',
+        action='store_true',
+        help='Skip screenshot generation'
+    )
+
+    parser.add_argument(
+        '--save-json',
+        action='store_true',
+        help='Save search result to JSON file in specified output directory'
+    )
+
+    parser.add_argument(
+        '--json-output-dir',
+        default='exports',
+        help='Directory for JSON exports (default: exports)'
+    )
+
+    return parser.parse_args()
+
+
 async def main():
     """Main search automation function"""
     browser = None
@@ -41,24 +93,12 @@ async def main():
 
     try:
         # Parse command line arguments
-        # Usage: python -m src.search "query" [--model MODEL] [--no-screenshot]
-        search_query = 'What is Generative Engine Optimization?'
-        model = None
-        save_screenshot = True  # Default: save screenshots
-
-        # Simple argument parsing
-        args = sys.argv[1:]
-        i = 0
-        while i < len(args):
-            if args[i] == '--model' and i + 1 < len(args):
-                model = args[i + 1]
-                i += 2
-            elif args[i] == '--no-screenshot':
-                save_screenshot = False
-                i += 1
-            else:
-                search_query = args[i]
-                i += 1
+        args = parse_arguments()
+        search_query = args.query
+        model = args.model
+        save_screenshot = not args.no_screenshot
+        save_json = args.save_json
+        json_output_dir = args.json_output_dir
 
         logger.info('=' * 60)
         logger.info('Perplexity.ai Search Automation')
@@ -164,6 +204,28 @@ async def main():
         if result.strategy_used:
             logger.info(f'Extraction strategy: {result.strategy_used}')
         logger.info(f'Extraction time: {result.extraction_time:.2f}s')
+
+        # Save to JSON if requested
+        if save_json:
+            result_dict = {
+                "id": result_id,
+                "query": search_query,
+                "model": model,
+                "timestamp": datetime.now().isoformat(),
+                "answer_text": result.answer_text,
+                "sources": result.sources,
+                "screenshot_path": str(screenshot_path) if screenshot_path else None,
+                "execution_time_seconds": execution_time,
+                "success": success,
+                "error_message": error_message
+            }
+            try:
+                json_path = save_result_to_json(result_dict, output_dir=json_output_dir)
+                logger.info(f'Saved result to JSON: {json_path}')
+                print(f'\nResult exported to JSON: {json_path}')
+            except Exception as e:
+                logger.warning(f'Failed to save JSON: {e}')
+                print(f'\nWarning: Failed to save JSON: {e}', file=sys.stderr)
 
     except Exception as error:
         logger.error(f'Error: {str(error)}', exc_info=True)

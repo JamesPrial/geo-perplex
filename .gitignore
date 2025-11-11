@@ -18,4 +18,5 @@ __pycache__/
 # Search results storage
 search_results.db
 screenshots/
+exports/
 search-results-screenshot.png
