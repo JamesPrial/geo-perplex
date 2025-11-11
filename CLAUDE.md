@@ -18,6 +18,7 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 - ✅ **Structured logging**: Comprehensive DEBUG/INFO/WARNING/ERROR logging
 - ✅ **Centralized configuration**: All constants moved to `src/config.py`
 - ✅ **Bug fixes**: Corrected all async/await issues with Nodriver properties
+- ✅ **Modular architecture**: Refactored monolithic code into clean, focused modules
 
 ## Core Architecture
 
@@ -33,17 +34,27 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
   - Retry and stability detection settings
   - Easy to tune without touching code
 
-- **`src/search.py`**: Main automation script (645 lines, heavily enhanced)
-  - **Helper functions**: `human_delay()`, `type_like_human()`, `find_interactive_element()`, `health_check()`, `async_retry()`
-  - **Browser fingerprinting**: Random user agents and viewport sizes
-  - **Human-like typing**: Character-by-character with variable delays (0.05-0.15s per char)
-  - **Cookie injection**: Enhanced with retry logic and verification
-  - **Content stability**: Hash-based detection with 0.5s intervals
-  - **Text extraction**: 3-tier fallback strategy (marker-based → clean text → direct container)
-  - **Structured logging**: DEBUG/INFO/WARNING/ERROR levels throughout
-  - Loads cookies via `src/utils/cookies.py`
-  - Saves results to database via `src/utils/storage.py`
-  - Generates screenshots with unique timestamped filenames (unless `--no-screenshot`)
+- **`src/search_cli.py`**: Main CLI orchestration (209 lines)
+  - Command-line argument parsing
+  - Orchestrates all modules for search execution
+  - Result display and database storage
+  - Entry point: `python -m src.search_cli`
+
+### Modular Architecture (Refactored from monolithic 856-line file)
+
+- **`src/browser/`**: Browser automation modules
+  - `manager.py` (84 lines): Browser lifecycle and fingerprint randomization
+  - `interactions.py` (128 lines): Human-like behavior utilities (`human_delay()`, `type_like_human()`, `find_interactive_element()`, `health_check()`)
+  - `auth.py` (132 lines): Cookie injection with retry logic and authentication verification
+
+- **`src/search/`**: Search execution modules
+  - `executor.py` (182 lines): Search execution with triple fallback submission
+  - `extractor.py` (215 lines): Result extraction with 3-tier strategy (marker-based → clean text → direct container)
+
+- **`src/utils/`**: Utility modules
+  - `decorators.py` (49 lines): Reusable `async_retry()` decorator with exponential backoff
+  - `cookies.py`: Cookie loading and validation
+  - `storage.py`: SQLite database operations
 
 - **`src/analyze.py`**: Results analysis and comparison CLI tool
   - Query and filter search results from database
@@ -111,19 +122,19 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 
 ```bash
 # Basic search with default query
-python -m src.search
+python -m src.search_cli
 
 # Custom search query
-python -m src.search "What are the best project management tools for startups?"
+python -m src.search_cli "What are the best project management tools for startups?"
 
 # Track which AI model is being used
-python -m src.search "What is GEO?" --model gpt-4
+python -m src.search_cli "What is GEO?" --model gpt-4
 
 # Skip screenshot generation
-python -m src.search "What is Python?" --no-screenshot
+python -m src.search_cli "What is Python?" --no-screenshot
 
 # Combine options
-python -m src.search "Best CRM tools" --model claude-3 --no-screenshot
+python -m src.search_cli "Best CRM tools" --model claude-3 --no-screenshot
 ```
 
 ### Analyzing Stored Results
@@ -165,40 +176,42 @@ See `auth.json.example` for format.
 
 ## Important Technical Details
 
-### Authentication Flow (`src/search.py`)
+### Authentication Flow (`src/search_cli.py` with modular components)
 
-1. Parse command-line arguments: query, `--model`, `--no-screenshot`
+1. Parse command-line arguments: query, `--model`, `--no-screenshot` (in `src/search_cli.py`)
 2. Load cookies from `auth.json` via `src/utils/cookies.py`
 3. Validate required authentication cookies are present
-4. **Randomize browser fingerprint**: Select random user agent and viewport size from pools
-5. Launch browser in headed mode with Nodriver + randomized fingerprint
-6. **Set cookies with retry logic**: `@async_retry` decorator automatically retries on failure
-7. Navigate to Perplexity.ai
-8. **Health check**: Verify page responsiveness and content availability
-9. **Verify authentication**: Check for authenticated UI elements (sidebar, account menu)
+4. **Launch browser with fingerprint**: `src/browser/manager.py` randomizes user agent and viewport
+5. **Set cookies with retry logic**: `src/browser/auth.py` with `@async_retry` decorator from `src/utils/decorators.py`
+6. Navigate to Perplexity.ai
+7. **Health check**: `src/browser/interactions.py` verifies page responsiveness
+8. **Verify authentication**: `src/browser/auth.py` checks for authenticated UI elements
 
 ### Search Process (Enhanced with Human-Like Behavior)
 
-1. **Find interactive search input**: Use `find_interactive_element()` with visibility checks
-2. **Human delay**: Short random pause (0.3-0.7s) before interaction
-3. Click to focus input with mouse hover simulation
-4. **Type query character-by-character**: Variable delays (0.05-0.15s per char, 0.1-0.2s for spaces)
-5. **Reading pause**: Short delay (0.3-0.7s) before submission (mimics human reading)
-6. Submit search with triple fallback approach:
-   - Send `\n` character (NOT the text "Enter")
-   - Send CDP Enter key event as backup
-   - Click search button as final fallback
-7. **Wait for search initiation**: Check URL change and loading indicators
-8. **Content stability detection**: Hash-based monitoring with 0.5s intervals until content stabilizes
-9. **Extract results with 3-tier strategy**:
-   - Strategy 1: Marker-based extraction (between "1 step completed" and "ask a follow-up")
-   - Strategy 2: Clean text extraction (filter UI patterns)
-   - Strategy 3: Direct container selection (last resort)
-10. Extract sources from `[data-testid*="source"] a` elements
-11. Take screenshot with unique filename (if not disabled)
-12. Save results to SQLite database with full metadata
-13. Display results to user with structured logging
-14. Clean up and close browser
+1. **Search execution** (`src/search/executor.py`):
+   - Find interactive search input with visibility checks
+   - Human delay (0.3-0.7s) before interaction
+   - Click to focus input
+   - Type query character-by-character with `type_like_human()` from `src/browser/interactions.py`
+   - Variable delays (0.05-0.15s per char, 0.1-0.2s for spaces)
+   - Submit with triple fallback: `\n` character → CDP Enter key → button click
+
+2. **Result extraction** (`src/search/extractor.py`):
+   - Wait for search initiation (URL change, loading indicators)
+   - Content stability detection with `wait_for_content_stability()`
+   - Hash-based monitoring with 0.5s intervals
+   - 3-tier extraction strategy:
+     - Strategy 1: Marker-based (between "1 step completed" and "ask a follow-up")
+     - Strategy 2: Clean text extraction (filter UI patterns)
+     - Strategy 3: Direct container selection (last resort)
+   - Extract sources from `[data-testid*="source"] a` elements
+
+3. **Save and display** (`src/search_cli.py`):
+   - Take screenshot with unique filename (if not disabled)
+   - Save results to SQLite database via `src/utils/storage.py`
+   - Display results to user with structured formatting
+   - Clean up and close browser
 
 ### Database Integration
 
@@ -289,41 +302,43 @@ The analysis tool provides multiple query modes:
 
 All commands support `--full` flag to show complete answers instead of previews.
 
-## Helper Functions (`src/search.py`)
+## Helper Functions (Modularized)
 
-The codebase includes several helper functions for improved reliability and maintainability:
+The codebase includes several helper functions organized by module:
 
-### `human_delay(delay_type='short'|'medium'|'long')`
+### Browser Interactions (`src/browser/interactions.py`)
+
+#### `human_delay(delay_type='short'|'medium'|'long')`
 - Adds randomized delays to mimic human behavior
 - **short**: 0.3-0.7s, **medium**: 0.5-1.5s, **long**: 1.0-2.5s
 - Configurable via `HUMAN_BEHAVIOR['delays']` in `src/config.py`
-- Used throughout to avoid detection patterns
 
-### `type_like_human(element, text)`
+#### `type_like_human(element, text)`
 - Types text character-by-character with variable delays
 - 0.05-0.15s per character, 0.1-0.2s for spaces
 - Most realistic typing simulation for bot detection avoidance
-- Configurable via `HUMAN_BEHAVIOR['typing_speed']`
 
-### `find_interactive_element(page, selectors, timeout)`
+#### `find_interactive_element(page, selectors, timeout)`
 - Finds elements with visibility and interactability checks
-- Uses JavaScript to verify element is not hidden (`display: none`, `visibility: hidden`)
+- Uses JavaScript to verify element is not hidden
 - Tries multiple selectors with fallback
-- Returns only visible, interactive elements
 
-### `async_retry(max_attempts, exceptions)` (Decorator)
-- Automatically retries async functions on failure
-- Exponential backoff: delay × (2 ** attempt)
-- Applied to `set_cookies()` function
-- Configurable via `RETRY_CONFIG`
-
-### `health_check(page)`
+#### `health_check(page)`
 - Validates page state after navigation
 - Checks: page responsiveness, main content presence, page title
 - Returns structured health report dict
-- Used for debugging navigation issues
 
-### `wait_for_content_stability(page, max_wait)`
+### Decorators (`src/utils/decorators.py`)
+
+#### `async_retry(max_attempts, exceptions)`
+- Decorator that automatically retries async functions on failure
+- Exponential backoff: delay × (2 ** attempt)
+- Applied to `set_cookies()` function in `src/browser/auth.py`
+- Configurable via `RETRY_CONFIG`
+
+### Search Execution (`src/search/executor.py`)
+
+#### `wait_for_content_stability(page, max_wait)`
 - Monitors content changes using MD5 hashing
 - Checks every 0.5s for stability
 - Requires 3 consecutive stable checks (1.5s total)

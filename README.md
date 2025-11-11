@@ -100,7 +100,7 @@ The tool requires valid Perplexity.ai authentication cookies to function.
 Run a search with a default query:
 
 ```bash
-python -m src.search
+python -m src.search_cli
 ```
 
 #### Custom Search Query
@@ -108,7 +108,7 @@ python -m src.search
 Provide your own search query:
 
 ```bash
-python -m src.search "What is GEO?"
+python -m src.search_cli "What is GEO?"
 ```
 
 #### Track AI Model
@@ -116,7 +116,7 @@ python -m src.search "What is GEO?"
 Specify which AI model you're using for later comparison:
 
 ```bash
-python -m src.search "What are the best CRM tools?" --model gpt-4
+python -m src.search_cli "What are the best CRM tools?" --model gpt-4
 ```
 
 #### Disable Screenshots
@@ -124,24 +124,24 @@ python -m src.search "What are the best CRM tools?" --model gpt-4
 Skip screenshot generation to save disk space:
 
 ```bash
-python -m src.search "What is Python?" --no-screenshot
+python -m src.search_cli "What is Python?" --no-screenshot
 ```
 
 #### Examples
 
 Research how LLMs view a specific product:
 ```bash
-python -m src.search "What are the best project management tools for startups?" --model default
+python -m src.search_cli "What are the best project management tools for startups?" --model default
 ```
 
 Analyze competitor positioning:
 ```bash
-python -m src.search "Compare Slack vs Microsoft Teams for remote teams" --model claude-3
+python -m src.search_cli "Compare Slack vs Microsoft Teams for remote teams" --model claude-3
 ```
 
 Test brand visibility:
 ```bash
-python -m src.search "What are the top CRM solutions for small businesses?" --model gpt-4
+python -m src.search_cli "What are the top CRM solutions for small businesses?" --model gpt-4
 ```
 
 ### Analyzing Search Results
@@ -387,7 +387,9 @@ geo-perplex/
 
 ### Key Files
 
-- **`src/search.py`**: Main automation script that orchestrates the entire search process
+- **`src/search_cli.py`**: Main CLI orchestration that coordinates modular components
+- **`src/browser/`**: Browser automation modules (manager, auth, interactions)
+- **`src/search/`**: Search execution and extraction modules
   - Loads cookies and validates authentication
   - Launches browser with Nodriver in headed mode
   - Authenticates with Perplexity using cookies
