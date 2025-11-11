@@ -13,7 +13,7 @@ from typing import Dict
 
 from src.utils.cookies import load_cookies, validate_auth_cookies
 from src.utils.storage import save_search_result
-from src.config import SCREENSHOT_CONFIG, LOGGING_CONFIG
+from src.config import SCREENSHOT_CONFIG, LOGGING_CONFIG, MODEL_MAPPING
 
 # Import from new modular structure
 from src.browser.manager import launch_browser
@@ -21,6 +21,7 @@ from src.browser.auth import set_cookies, verify_authentication
 from src.browser.interactions import health_check, human_delay
 from src.search.executor import perform_search
 from src.search.extractor import extract_search_results, ExtractionResult
+from src.search.model_selector import select_model
 
 # Configure logging
 logging.basicConfig(
@@ -101,11 +102,28 @@ async def main():
 
         logger.info('Successfully authenticated!')
 
-        # Step 7: Perform search
+        # Step 7: Select AI model if specified
+        if model:
+            logger.info(f'Selecting AI model: {model}')
+            try:
+                success = await select_model(page, model)
+                if not success:
+                    raise RuntimeError(f'Failed to select model: {model}')
+                logger.info(f'Successfully selected model: {model}')
+            except ValueError as e:
+                logger.error(f'Invalid model name: {e}')
+                available = list(MODEL_MAPPING.keys())
+                logger.error(f'Available models: {", ".join(available)}')
+                raise
+            except Exception as e:
+                logger.error(f'Model selection failed: {e}')
+                raise
+
+        # Step 8: Perform search
         logger.info('Performing search...')
         await perform_search(page, search_query)
 
-        # Step 8: Wait for and extract results
+        # Step 9: Wait for and extract results
         logger.info('Waiting for search results...')
 
         # Generate unique screenshot filename (only if screenshots are enabled)
@@ -119,7 +137,7 @@ async def main():
 
         result = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
 
-        # Step 9: Display results
+        # Step 10: Display results
         display_results(result)
 
         # Update success status based on extraction result
@@ -128,7 +146,7 @@ async def main():
             error_message = result.error
             logger.warning(f'Extraction failed: {error_message}')
 
-        # Step 10: Save to database
+        # Step 11: Save to database
         execution_time = time.time() - start_time
         logger.info('Saving results to database...')
         result_id = save_search_result(

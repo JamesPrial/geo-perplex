@@ -268,3 +268,58 @@ VIEWPORT_SIZES = [
     {'width': 1440, 'height': 900},
     {'width': 1280, 'height': 720},
 ]
+
+# Model selection configuration
+# Discovered via UI inspection: Model selector is a button with circuit icon
+# Located in the right side of search box (2nd button from left after globe/sources icon)
+MODEL_SELECTOR = {
+    # Textarea selector to find the search container
+    'search_input': 'textarea',
+
+    # Patterns to find the model selector button
+    # Button is inside search container, right side, with circuit icon
+    'selector_patterns': [
+        'button[aria-label*="model" i]',
+        'button[aria-label*="select" i]',
+        'button[title*="model" i]',
+        '[data-testid*="model"]',
+        '[data-testid*="select"]',
+    ],
+
+    # After clicking, modal/dropdown appears with model options
+    'options_container': [
+        '[role="dialog"]',
+        '[role="menu"]',
+        '[role="listbox"]',
+        '[class*="modal"]',
+        '[class*="dropdown"]',
+        '[class*="popup"]',
+    ],
+
+    # Model option items inside the container
+    'option_item': [
+        '[role="menuitem"]',
+        '[role="option"]',
+        'button',
+        'div[role="button"]',
+        'div[class*="option"]',
+    ],
+
+    'timeout': 5.0
+}
+
+# Model name mapping for user-friendly model selection
+# Maps user-friendly CLI names to possible text variations in Perplexity's UI
+# Values are lists to support multiple text variations
+MODEL_MAPPING = {
+    'gpt-4': ['GPT-4', 'GPT 4', 'gpt-4', 'GPT4'],
+    'gpt-4-turbo': ['GPT-4 Turbo', 'GPT 4 Turbo', 'GPT-4 turbo'],
+    'claude': ['Claude', 'claude'],
+    'claude-3': ['Claude 3', 'Claude-3', 'Claude 3 Opus', 'Claude 3 Sonnet'],
+    'claude-opus': ['Claude 3 Opus', 'Claude Opus', 'Opus'],
+    'claude-sonnet': ['Claude 3 Sonnet', 'Claude Sonnet', 'Sonnet'],
+    'sonar': ['Sonar', 'sonar'],
+    'sonar-pro': ['Sonar Pro', 'Sonar-Pro'],
+    'gemini': ['Gemini', 'gemini', 'Gemini Pro'],
+    'default': ['Default', 'default'],
+}

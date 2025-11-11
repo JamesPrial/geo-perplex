@@ -50,6 +50,7 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 - **`src/search/`**: Search execution modules
   - `executor.py` (182 lines): Search execution with triple fallback submission
   - `extractor.py` (215 lines): Result extraction with 3-tier strategy (marker-based → clean text → direct container)
+  - `model_selector.py` (NEW): AI model selection with smart clicking and verification
 
 - **`src/utils/`**: Utility modules
   - `decorators.py` (49 lines): Reusable `async_retry()` decorator with exponential backoff
@@ -116,24 +117,41 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 
 12. **Unique Screenshot Filenames**: Screenshots use timestamp + query hash to prevent overwrites and enable traceability.
 
+13. **Active Model Selection**: The `--model` parameter actively selects AI models in Perplexity's UI (not just tracking). Uses:
+    - `SmartClicker` with 6 fallback strategies for reliable clicking
+    - `ElementWaiter` for waiting on dynamic UI elements
+    - Model name validation against `MODEL_MAPPING` in config
+    - Clear error messages with available models if invalid name provided
+    - Human-like delays between interactions (button click, menu open, option click)
+    - Optional verification to confirm selection succeeded
+
+14. **UI Discovery Support**: Includes standalone `scripts/inspect_model_selector.py` for manually discovering:
+    - Model selector CSS selectors and aria-labels
+    - Available model names and their UI text
+    - Options container structure (menu vs listbox)
+    - Allows non-technical users to update `src/config.py` without code changes
+
 ## Common Development Commands
 
 ### Running Searches
 
 ```bash
-# Basic search with default query
+# Basic search with default query (uses currently selected model)
 python -m src.search_cli
 
 # Custom search query
 python -m src.search_cli "What are the best project management tools for startups?"
 
-# Track which AI model is being used
+# Select a specific AI model and perform search
 python -m src.search_cli "What is GEO?" --model gpt-4
+
+# Available models: gpt-4, gpt-4-turbo, claude, claude-3, sonar, sonar-pro, default
+# (Model names may vary - run with invalid model to see available options)
 
 # Skip screenshot generation
 python -m src.search_cli "What is Python?" --no-screenshot
 
-# Combine options
+# Combine options: select model, custom query, skip screenshot
 python -m src.search_cli "Best CRM tools" --model claude-3 --no-screenshot
 ```
 
@@ -174,6 +192,40 @@ Authentication cookies must be manually extracted from a logged-in Perplexity.ai
 
 See `auth.json.example` for format.
 
+### Model Selection Setup
+
+The tool supports active AI model selection via the `--model` parameter. To set up models:
+
+1. **Discover available models** (first time only):
+   ```bash
+   python scripts/inspect_model_selector.py
+   ```
+   - Browser opens Perplexity.ai automatically
+   - Use DevTools (F12) to inspect the model selector UI
+   - Note CSS selectors, aria-labels, and available model names
+   - Press Ctrl+C when done
+
+2. **Update configuration** in `src/config.py`:
+   - Update `MODEL_SELECTOR['selector_patterns']` with discovered selectors
+   - Update `MODEL_SELECTOR['options_container']` with menu/listbox selectors
+   - Add entries to `MODEL_MAPPING` for each available model
+   - Example: `'gpt-4': 'GPT-4'` maps user input to UI text
+
+3. **Test model selection**:
+   ```bash
+   # Test with a specific model
+   python -m src.search_cli "Test query" --model gpt-4
+
+   # If invalid model, error shows available options
+   python -m src.search_cli "Test query" --model invalid-model
+   ```
+
+**Important Notes**:
+- Model names are case-sensitive (e.g., use `gpt-4` not `GPT-4` for `--model` parameter)
+- The UI text in MODEL_MAPPING should match exactly what appears in Perplexity's dropdown
+- If Perplexity updates their UI, run the discovery script again to get new selectors
+- Model selection is optional - omit `--model` to use Perplexity's default selection
+
 ## Important Technical Details
 
 ### Authentication Flow (`src/search_cli.py` with modular components)
@@ -186,6 +238,12 @@ See `auth.json.example` for format.
 6. Navigate to Perplexity.ai
 7. **Health check**: `src/browser/interactions.py` verifies page responsiveness
 8. **Verify authentication**: `src/browser/auth.py` checks for authenticated UI elements
+9. **Select AI model** (if specified): `src/search/model_selector.py` finds selector, clicks to open options, selects target model
+   - Uses `SmartClicker` for reliable multi-strategy clicking
+   - Uses `ElementWaiter` for waiting on options container
+   - Validates model name against `MODEL_MAPPING` in `src/config.py`
+   - Includes human-like delays between interactions
+   - Verifies selection success
 
 ### Search Process (Enhanced with Human-Like Behavior)
 
@@ -212,6 +270,48 @@ See `auth.json.example` for format.
    - Save results to SQLite database via `src/utils/storage.py`
    - Display results to user with structured formatting
    - Clean up and close browser
+
+### Model Selection Process (`src/search/model_selector.py`)
+
+When `--model` is specified, the tool performs active model selection:
+
+1. **Validation**: Verifies model name exists in `MODEL_MAPPING` from `src/config.py`
+   - Raises `ValueError` with list of available models if invalid
+   - User can fix and rerun with correct model name
+
+2. **Finding selector**: Tries multiple CSS selector patterns from `MODEL_SELECTOR['selector_patterns']`
+   - Looks for data-testid, aria-label, and class attributes
+   - Uses `find_interactive_element()` for visibility checks
+   - Raises `RuntimeError` if no selector pattern matches
+
+3. **Opening menu**: Uses `SmartClicker` to click model selector button
+   - Tries 6 different click strategies (normal, JavaScript, focus+Enter, etc.)
+   - Includes human-like delays (0.3-0.7s before click)
+   - Handles elements that require scrolling into view
+
+4. **Waiting for options**: Uses `ElementWaiter` to detect dropdown/menu appearance
+   - Tries multiple container selectors: role="menu", role="listbox", etc.
+   - Waits up to 5 seconds (configurable timeout)
+   - Raises `RuntimeError` if container never appears
+
+5. **Finding option**: Searches for model option by text content
+   - Uses JavaScript evaluation to find matching text
+   - Tries multiple selector patterns and text matching strategies
+   - Lists available options in error message if target not found
+
+6. **Clicking option**: Uses `SmartClicker` again for reliable clicking
+   - Includes human-like delays between button click and option click
+   - Multiple fallback strategies for maximum reliability
+
+7. **Verification**: Confirms selection took effect
+   - Checks if selector UI now shows selected model name
+   - Returns True even if verification inconclusive (click succeeded)
+   - Logs detailed messages at DEBUG/INFO/ERROR levels
+
+**Error Handling**:
+- `ValueError`: Invalid model name - lists available models in error
+- `RuntimeError`: Selector not found, menu didn't open, option not found, etc.
+- All errors include actionable messages for debugging
 
 ### Database Integration
 
