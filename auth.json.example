@@ -1,0 +1,40 @@
+[{
+    "name": "pplx.session-id",
+    "value": "YOUR_SESSION_ID",
+    "domain": "www.perplexity.ai",
+    "path": "/",
+    "expires": 1762833459,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "next-auth.csrf-token",
+    "value": "YOUR_CSRF_TOKEN",
+    "domain": "www.perplexity.ai",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "next-auth.callback-url",
+    "value": "YOUR_CALLBACK_URL",
+    "domain": "www.perplexity.ai",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "__Secure-next-auth.session-token",
+    "value": "YOUR_SESSION_TOKEN",
+    "domain": "www.perplexity.ai",
+    "path": "/",
+    "expires": 1765424168.176595,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  }]
