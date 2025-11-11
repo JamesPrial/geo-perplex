@@ -21,7 +21,7 @@ def load_cookies(auth_file_path: Optional[str] = None) -> List[Dict[str, Any]]:
     cookie_path = auth_file_path or os.path.join(os.getcwd(), 'auth.json')
 
     try:
-        with open(cookie_path, 'r', encoding='utf-8') as f:
+        with open(cookie_path, 'r', encoding='utf-8-sig') as f:
             cookie_data = f.read()
             cookies = json.loads(cookie_data)
 
@@ -31,6 +31,11 @@ def load_cookies(auth_file_path: Optional[str] = None) -> List[Dict[str, Any]]:
         print(f"✓ Loaded {len(cookies)} cookies from {cookie_path}")
         return cookies
 
+    except UnicodeDecodeError:
+        raise ValueError(
+            f"Cookie file appears to be binary or not UTF-8 encoded: {cookie_path}\n"
+            "Please ensure the file is a valid JSON text file."
+        )
     except FileNotFoundError:
         raise FileNotFoundError(
             f"Cookie file not found: {cookie_path}\n"
@@ -53,7 +58,7 @@ def validate_auth_cookies(cookies: List[Dict[str, Any]]) -> bool:
         '__Secure-next-auth.session-token'
     ]
 
-    cookie_names = [cookie.get('name') for cookie in cookies]
+    cookie_names = [cookie.get('name') for cookie in cookies if 'name' in cookie]
     has_required = all(name in cookie_names for name in required_cookies)
 
     if not has_required:

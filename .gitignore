@@ -11,6 +11,8 @@ __pycache__/
 *.pyo
 *.egg-info
 .pytest_cache/
+.coverage
+.coveragerc
 
 # Search results storage
 search_results.db

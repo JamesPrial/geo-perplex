@@ -548,17 +548,20 @@ def display_results(results: Dict) -> None:
     print('📊 SEARCH RESULTS')
     print('═══════════════════════════════════════════════════════════\n')
 
+    answer = results.get('answer', 'No answer available')
     print('ANSWER:')
     print('-------')
-    print(results['answer'])
+    print(answer if answer is not None else 'No answer available')
     print()
 
-    if len(results['sources']) > 0:
+    sources = results.get('sources', [])
+    if sources and isinstance(sources, list) and len(sources) > 0:
         print('\nSOURCES:')
         print('--------')
-        for index, source in enumerate(results['sources']):
-            print(f"{index + 1}. {source['text']}")
-            print(f"   {source['url']}")
+        for index, source in enumerate(sources):
+            if isinstance(source, dict):
+                print(f"{index + 1}. {source.get('text', 'N/A')}")
+                print(f"   {source.get('url', 'N/A')}")
 
     print('\n═══════════════════════════════════════════════════════════')
 

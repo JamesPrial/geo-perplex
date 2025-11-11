@@ -18,47 +18,52 @@ from src.utils.storage import (
 
 def format_timestamp(timestamp_str: str) -> str:
     """Format timestamp for display"""
+    if timestamp_str is None:
+        return "N/A"
     try:
         dt = datetime.fromisoformat(timestamp_str)
         return dt.strftime('%Y-%m-%d %H:%M:%S')
     except:
-        return timestamp_str
+        return str(timestamp_str) if timestamp_str else "N/A"
 
 
 def print_result(result: Dict, show_full_answer: bool = False) -> None:
     """Print a single result in formatted way"""
     print(f"\n{'='*80}")
-    print(f"ID: {result['id']}")
-    print(f"Query: {result['query']}")
+    print(f"ID: {result.get('id', 'N/A')}")
+    print(f"Query: {result.get('query', 'N/A')}")
     print(f"Model: {result.get('model') or 'default'}")
-    print(f"Timestamp: {format_timestamp(result['timestamp'])}")
+    print(f"Timestamp: {format_timestamp(result.get('timestamp'))}")
     exec_time = result.get('execution_time_seconds') or 0
     print(f"Execution Time: {exec_time:.2f}s")
-    print(f"Success: {'✓' if result['success'] else '✗'}")
+    print(f"Success: {'✓' if result.get('success', True) else '✗'}")
 
-    if not result['success'] and result.get('error_message'):
+    if not result.get('success', True) and result.get('error_message'):
         print(f"Error: {result['error_message']}")
 
     if result.get('screenshot_path'):
         print(f"Screenshot: {result['screenshot_path']}")
 
-    print(f"\nAnswer ({len(result['answer_text'])} chars):")
+    answer_text = result.get('answer_text') or ''
+    print(f"\nAnswer ({len(answer_text)} chars):")
     print("-" * 80)
     if show_full_answer:
-        print(result['answer_text'])
+        print(answer_text)
     else:
         # Show first 500 chars
-        answer_preview = result['answer_text'][:500]
-        if len(result['answer_text']) > 500:
+        answer_preview = answer_text[:500]
+        if len(answer_text) > 500:
             answer_preview += '...'
         print(answer_preview)
 
-    if result['sources']:
-        print(f"\nSources ({len(result['sources'])}):")
+    sources = result.get('sources', [])
+    if sources and isinstance(sources, list):
+        print(f"\nSources ({len(sources)}):")
         print("-" * 80)
-        for i, source in enumerate(result['sources'][:5], 1):
-            print(f"{i}. {source['text']}")
-            print(f"   {source['url']}")
+        for i, source in enumerate(sources[:5], 1):
+            if isinstance(source, dict):
+                print(f"{i}. {source.get('text', 'N/A')}")
+                print(f"   {source.get('url', 'N/A')}")
 
 
 def list_queries(args) -> None:
