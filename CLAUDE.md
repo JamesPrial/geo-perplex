@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Status**: ✅ Search functionality is fully working as of last update. If searches aren't submitting or results aren't extracting, check the **Nodriver-Specific Gotchas** section below first!
+> **Status**: ✅ Search functionality is fully working with **advanced bot detection avoidance** as of latest update (2025-01-11). The tool now features human-like typing, browser fingerprint randomization, and multiple extraction fallbacks for maximum reliability.
 
 ## Project Overview
 
@@ -10,15 +10,38 @@ GEO-Perplex is a Python-based automation tool for researching Generative Engine 
 
 The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright or Selenium) for advanced bot detection bypass, and uses cookie-based authentication to avoid CAPTCHA and login rate limits.
 
+### Recent Major Improvements (2025-01-11)
+
+- ✅ **Human-like behavior**: Character-by-character typing with variable delays
+- ✅ **Browser fingerprint randomization**: Random user agents and viewport sizes
+- ✅ **Enhanced reliability**: Retry logic, multiple extraction strategies, cookie verification
+- ✅ **Structured logging**: Comprehensive DEBUG/INFO/WARNING/ERROR logging
+- ✅ **Centralized configuration**: All constants moved to `src/config.py`
+- ✅ **Bug fixes**: Corrected all async/await issues with Nodriver properties
+
 ## Core Architecture
 
 ### Key Files
 
-- **`src/search.py`**: Main automation script that orchestrates the entire search process
+- **`src/config.py`**: Centralized configuration file (NEW)
+  - All constants, timeouts, and selectors in one place
+  - Browser configuration (args, headless mode)
+  - Human behavior settings (typing speeds, delays)
+  - Element selectors organized by purpose
+  - Text extraction markers and patterns
+  - User agent and viewport randomization pools
+  - Retry and stability detection settings
+  - Easy to tune without touching code
+
+- **`src/search.py`**: Main automation script (645 lines, heavily enhanced)
+  - **Helper functions**: `human_delay()`, `type_like_human()`, `find_interactive_element()`, `health_check()`, `async_retry()`
+  - **Browser fingerprinting**: Random user agents and viewport sizes
+  - **Human-like typing**: Character-by-character with variable delays (0.05-0.15s per char)
+  - **Cookie injection**: Enhanced with retry logic and verification
+  - **Content stability**: Hash-based detection with 0.5s intervals
+  - **Text extraction**: 3-tier fallback strategy (marker-based → clean text → direct container)
+  - **Structured logging**: DEBUG/INFO/WARNING/ERROR levels throughout
   - Loads cookies via `src/utils/cookies.py`
-  - Launches browser with Nodriver in headed mode
-  - Authenticates with Perplexity using cookies
-  - Performs search and extracts results
   - Saves results to database via `src/utils/storage.py`
   - Generates screenshots with unique timestamped filenames (unless `--no-screenshot`)
 
@@ -62,13 +85,25 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 
 4. **Chrome DevTools Protocol (CDP)**: Uses CDP via `page.send(uc.cdp.network.set_cookie(...))` for native browser control and cookie injection.
 
-5. **SQLite Database Storage**: All search results are automatically saved to enable:
-   - Model comparison and GEO analysis
-   - Historical tracking of responses over time
-   - Offline querying and analysis
-   - Research data persistence
+5. **Human-Like Behavior**: Character-by-character typing with randomized delays (0.05-0.15s per character) mimics real user interaction and reduces detection risk.
 
-6. **Unique Screenshot Filenames**: Screenshots use timestamp + query hash to prevent overwrites and enable traceability.
+6. **Browser Fingerprint Randomization**: Random selection from 5 user agents and 5 viewport sizes makes each session appear as a different user.
+
+7. **Multiple Fallback Strategies**: Triple fallbacks for search submission and 3-tier text extraction ensures reliability even when Perplexity's UI changes.
+
+8. **Retry Logic with Exponential Backoff**: Critical operations like cookie injection automatically retry with increasing delays, handling transient failures gracefully.
+
+9. **Content Stability Detection**: Hash-based change detection with 0.5s intervals accurately detects when answers finish generating, avoiding premature extraction.
+
+10. **SQLite Database Storage**: All search results are automatically saved to enable:
+    - Model comparison and GEO analysis
+    - Historical tracking of responses over time
+    - Offline querying and analysis
+    - Research data persistence
+
+11. **Centralized Configuration**: `src/config.py` contains all tunable parameters, making it easy to adjust behavior without modifying code.
+
+12. **Unique Screenshot Filenames**: Screenshots use timestamp + query hash to prevent overwrites and enable traceability.
 
 ## Common Development Commands
 
@@ -145,27 +180,37 @@ See `auth.json.example` for format.
 ### Authentication Flow (`src/search.py`)
 
 1. Parse command-line arguments: query, `--model`, `--no-screenshot`
-2. Load cookies from `auth.json`
+2. Load cookies from `auth.json` via `src/utils/cookies.py`
 3. Validate required authentication cookies are present
-4. Launch browser in headed mode with Nodriver
-5. Set cookies BEFORE navigating to site using CDP
-6. Navigate to Perplexity.ai
-7. Verify authentication by checking for authenticated UI elements
+4. **Randomize browser fingerprint**: Select random user agent and viewport size from pools
+5. Launch browser in headed mode with Nodriver + randomized fingerprint
+6. **Set cookies with retry logic**: `@async_retry` decorator automatically retries on failure
+7. Navigate to Perplexity.ai
+8. **Health check**: Verify page responsiveness and content availability
+9. **Verify authentication**: Check for authenticated UI elements (sidebar, account menu)
 
-### Search Process
+### Search Process (Enhanced with Human-Like Behavior)
 
-1. Find search input using multiple selectors (fallback approach)
-2. Click to focus, type query using `send_keys()`
-3. Submit search with triple fallback approach:
+1. **Find interactive search input**: Use `find_interactive_element()` with visibility checks
+2. **Human delay**: Short random pause (0.3-0.7s) before interaction
+3. Click to focus input with mouse hover simulation
+4. **Type query character-by-character**: Variable delays (0.05-0.15s per char, 0.1-0.2s for spaces)
+5. **Reading pause**: Short delay (0.3-0.7s) before submission (mimics human reading)
+6. Submit search with triple fallback approach:
    - Send `\n` character (NOT the text "Enter")
    - Send CDP Enter key event as backup
    - Click search button as final fallback
-4. Wait for search initiation and content stabilization
-5. Extract results using `.text_all` property
-6. Take screenshot with unique filename (if not disabled)
-7. Save results to SQLite database with metadata
-8. Display results to user
-9. Clean up and close browser
+7. **Wait for search initiation**: Check URL change and loading indicators
+8. **Content stability detection**: Hash-based monitoring with 0.5s intervals until content stabilizes
+9. **Extract results with 3-tier strategy**:
+   - Strategy 1: Marker-based extraction (between "1 step completed" and "ask a follow-up")
+   - Strategy 2: Clean text extraction (filter UI patterns)
+   - Strategy 3: Direct container selection (last resort)
+10. Extract sources from `[data-testid*="source"] a` elements
+11. Take screenshot with unique filename (if not disabled)
+12. Save results to SQLite database with full metadata
+13. Display results to user with structured logging
+14. Clean up and close browser
 
 ### Database Integration
 
@@ -180,24 +225,45 @@ All search results are automatically saved to `search_results.db` with:
 
 The database uses indexes on query, model, and timestamp for fast querying.
 
-### Cookie Injection
+### Cookie Injection (Enhanced with Retry Logic)
 
-Uses Nodriver's CDP to inject cookies with proper parameters:
-- Handles `secure`, `httpOnly`, `sameSite`, `expires` attributes
+Uses Nodriver's CDP to inject cookies with robust error handling:
+- **Retry decorator**: `@async_retry(max_attempts=2)` automatically retries on failure
+- **Critical cookie tracking**: Validates `pplx.session-id` and `__Secure-next-auth.session-token`
+- **Error handling**: Distinguishes between critical (fail fast) and optional cookies
+- **Verification**: Confirms all critical cookies were set before proceeding
+- Handles `secure`, `httpOnly`, `sameSite`, `expires` attributes properly
 - Converts cookie format to CDP `network.set_cookie()` format
 - Uses `uc.cdp.network.CookieSameSite` and `TimeSinceEpoch` types
 - Sets cookies BEFORE navigation to avoid race conditions
+- Logs success/failure for each cookie (DEBUG level)
 
-### Result Extraction Approach
+### Result Extraction Approach (3-Tier Fallback Strategy)
 
-The tool extracts answer text from Perplexity's dynamic UI:
+The tool uses multiple strategies to extract answer text from Perplexity's dynamic UI:
+
+**Strategy 1: Marker-Based Extraction** (Most Accurate)
+- Searches for answer between configurable start/end markers
+- Start markers: "1 step completed", "answer images", "images "
+- End markers: "ask a follow-up", "ask follow-up"
+- Automatically removes UI elements: "Home Discover", "Spaces Finance", etc.
+- Defined in `EXTRACTION_MARKERS` config
+
+**Strategy 2: Clean Text Extraction** (Fallback)
+- Gets full main element text and filters out known UI patterns
+- Skip patterns: "Home", "Discover", "Spaces", "Finance", "Install", etc.
+- Used when markers aren't found or strategy 1 fails
+
+**Strategy 3: Direct Container Selection** (Last Resort)
+- Tries multiple answer container selectors: `[data-testid*="answer"]`, `[class*="answer"]`, etc.
+- Returns first element with sufficient content (>50 chars)
+
+**Important Technical Notes:**
 - Uses `element.text_all` property (NOT `element.text`) to get all descendant text
-- **Important**: `.text_all` concatenates text with spaces, not newlines
-- Extracts content between markers:
-  - Start: After "1 step completed" or "answer images"
-  - End: Before "ask a follow-up"
+- `.text_all` concatenates text with spaces, not newlines
+- All strategies properly handle async/await (text properties are NOT awaited)
 - Sources extracted from `[data-testid*="source"] a` elements
-- Failed extractions are saved to database with error details
+- Failed extractions are logged and saved to database with error details
 
 ### Database Schema
 
@@ -235,6 +301,47 @@ The analysis tool provides multiple query modes:
 
 All commands support `--full` flag to show complete answers instead of previews.
 
+## Helper Functions (`src/search.py`)
+
+The codebase includes several helper functions for improved reliability and maintainability:
+
+### `human_delay(delay_type='short'|'medium'|'long')`
+- Adds randomized delays to mimic human behavior
+- **short**: 0.3-0.7s, **medium**: 0.5-1.5s, **long**: 1.0-2.5s
+- Configurable via `HUMAN_BEHAVIOR['delays']` in `src/config.py`
+- Used throughout to avoid detection patterns
+
+### `type_like_human(element, text)`
+- Types text character-by-character with variable delays
+- 0.05-0.15s per character, 0.1-0.2s for spaces
+- Most realistic typing simulation for bot detection avoidance
+- Configurable via `HUMAN_BEHAVIOR['typing_speed']`
+
+### `find_interactive_element(page, selectors, timeout)`
+- Finds elements with visibility and interactability checks
+- Uses JavaScript to verify element is not hidden (`display: none`, `visibility: hidden`)
+- Tries multiple selectors with fallback
+- Returns only visible, interactive elements
+
+### `async_retry(max_attempts, exceptions)` (Decorator)
+- Automatically retries async functions on failure
+- Exponential backoff: delay × (2 ** attempt)
+- Applied to `set_cookies()` function
+- Configurable via `RETRY_CONFIG`
+
+### `health_check(page)`
+- Validates page state after navigation
+- Checks: page responsiveness, main content presence, page title
+- Returns structured health report dict
+- Used for debugging navigation issues
+
+### `wait_for_content_stability(page, max_wait)`
+- Monitors content changes using MD5 hashing
+- Checks every 0.5s for stability
+- Requires 3 consecutive stable checks (1.5s total)
+- Minimum content threshold: 50 characters
+- Prevents premature extraction of incomplete answers
+
 ## Nodriver-Specific Gotchas
 
 ### Critical: Keyboard Input Handling
@@ -260,12 +367,42 @@ All commands support `--full` flag to show complete answers instead of previews.
 - These issues cause silent failures - no errors, just wrong behavior
 - The Enter key issue makes searches appear to work but not actually submit
 
+## Configuration and Logging
+
+### Centralized Configuration (`src/config.py`)
+
+All tunable parameters are in `src/config.py` for easy modification without touching code:
+- **BROWSER_CONFIG**: Browser launch arguments and headless mode
+- **HUMAN_BEHAVIOR**: Typing speeds and delay ranges
+- **TIMEOUTS**: All timeout values (page load, element selection, etc.)
+- **STABILITY_CONFIG**: Content detection thresholds
+- **SELECTORS**: CSS selectors organized by purpose (search input, auth indicators, etc.)
+- **EXTRACTION_MARKERS**: Text extraction start/end markers and UI patterns
+- **REQUIRED_COOKIES**: Authentication cookies list
+- **RETRY_CONFIG**: Retry attempts and backoff settings
+- **USER_AGENTS**: Pool of 5 realistic Chrome user agents
+- **VIEWPORT_SIZES**: Pool of 5 common screen resolutions
+
+### Structured Logging
+
+The tool uses Python's `logging` module with 4 levels:
+- **DEBUG**: Technical details (selectors used, extraction strategies, timings)
+- **INFO**: User-facing progress messages (authentication, search steps)
+- **WARNING**: Non-fatal issues (auth concerns, timeouts, fallback usage)
+- **ERROR**: Failures with full stack traces
+
+Configure logging level in `LOGGING_CONFIG['level']` (default: 'INFO')
+
+View debug logs: Change to `'DEBUG'` in `src/config.py` and rerun
+
 ## Limitations and Gotchas
 
 1. **Must run on system with display**: Cannot run on headless servers (cloud instances need X11/VNC)
-2. **Cookie expiration**: Cookies typically expire after 30 days - must be refreshed manually
-3. **Perplexity UI changes**: Result extraction may break if Perplexity changes HTML structure
-4. **Rate limiting**: Excessive automated searches may trigger rate limiting
-5. **Detection risk**: Despite Nodriver, automation may still be detected occasionally
-6. **Database not cloud-synced**: `search_results.db` is local only - backup manually if needed
-7. **Screenshots consume disk**: Default behavior saves screenshots (use `--no-screenshot` to disable)
+2. **Longer execution times**: Human-like behavior adds 5-10 seconds per search (character-by-character typing, random delays). This is intentional for bot detection avoidance. Typical execution time: 30-40 seconds.
+3. **Cookie expiration**: Cookies typically expire after 30 days - must be refreshed manually
+4. **Perplexity UI changes**: Result extraction may break if Perplexity changes HTML structure (3-tier fallback minimizes this risk)
+5. **Rate limiting**: Excessive automated searches may trigger rate limiting (human-like behavior reduces risk)
+6. **Detection risk**: Despite advanced stealth measures (fingerprinting, human typing, delays), automation may still be detected occasionally
+7. **Database not cloud-synced**: `search_results.db` is local only - backup manually if needed
+8. **Screenshots consume disk**: Default behavior saves screenshots (use `--no-screenshot` to disable)
+9. **Configuration changes require restart**: Changes to `src/config.py` only take effect on next run

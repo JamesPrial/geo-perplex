@@ -6,13 +6,196 @@ import sys
 import asyncio
 import time
 import hashlib
+import random
+import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable, Any
+from functools import wraps
 import nodriver as uc
 from src.utils.cookies import load_cookies, validate_auth_cookies
 from src.utils.storage import save_search_result
+from src.config import (
+    BROWSER_CONFIG, HUMAN_BEHAVIOR, TIMEOUTS, STABILITY_CONFIG,
+    SELECTORS, EXTRACTION_MARKERS, REQUIRED_COOKIES, COOKIE_DEFAULTS,
+    RETRY_CONFIG, SCREENSHOT_CONFIG, LOGGING_CONFIG, USER_AGENTS, VIEWPORT_SIZES
+)
 
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, LOGGING_CONFIG['level']),
+    format=LOGGING_CONFIG['format'],
+    datefmt=LOGGING_CONFIG['date_format']
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+async def human_delay(delay_type: str = 'short') -> None:
+    """
+    Add human-like random delays to avoid detection
+
+    Args:
+        delay_type: 'short', 'medium', or 'long'
+    """
+    delays = HUMAN_BEHAVIOR['delays']
+
+    if delay_type == 'short':
+        delay = random.uniform(delays['short_min'], delays['short_max'])
+    elif delay_type == 'medium':
+        delay = random.uniform(delays['medium_min'], delays['medium_max'])
+    elif delay_type == 'long':
+        delay = random.uniform(delays['long_min'], delays['long_max'])
+    else:
+        delay = random.uniform(delays['short_min'], delays['short_max'])
+
+    await asyncio.sleep(delay)
+
+
+def async_retry(max_attempts: int = None, exceptions: tuple = (Exception,)):
+    """
+    Decorator for retrying async functions with exponential backoff
+
+    Args:
+        max_attempts: Maximum retry attempts (defaults to RETRY_CONFIG)
+        exceptions: Tuple of exceptions to catch
+    """
+    if max_attempts is None:
+        max_attempts = RETRY_CONFIG['max_attempts']
+
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        async def wrapper(*args, **kwargs) -> Any:
+            last_exception = None
+
+            for attempt in range(max_attempts):
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt < max_attempts - 1:
+                        delay = RETRY_CONFIG['base_delay']
+                        if RETRY_CONFIG['exponential']:
+                            delay *= (RETRY_CONFIG['backoff_factor'] ** attempt)
+
+                        logger.warning(
+                            f"{func.__name__} failed (attempt {attempt + 1}/{max_attempts}): {e}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(f"{func.__name__} failed after {max_attempts} attempts")
+
+            raise last_exception
+
+        return wrapper
+    return decorator
+
+
+async def find_interactive_element(page, selectors: List[str], timeout: int = None):
+    """
+    Find an interactive element with visibility and interactability checks
+
+    Args:
+        page: Nodriver page object
+        selectors: List of CSS selectors to try
+        timeout: Timeout for element selection
+
+    Returns:
+        Element if found and interactive, None otherwise
+    """
+    if timeout is None:
+        timeout = TIMEOUTS['element_select']
+
+    for selector in selectors:
+        try:
+            element = await page.select(selector, timeout=timeout)
+            if element:
+                # Check if element is visible and enabled
+                try:
+                    # Try to get element properties
+                    is_visible = await page.evaluate(
+                        f'document.querySelector("{selector}") !== null && '
+                        f'window.getComputedStyle(document.querySelector("{selector}")).display !== "none" && '
+                        f'window.getComputedStyle(document.querySelector("{selector}")).visibility !== "hidden"'
+                    )
+
+                    if is_visible:
+                        logger.debug(f"Found interactive element: {selector}")
+                        return element
+                except:
+                    # If we can't check visibility, assume it's visible
+                    logger.debug(f"Found element (visibility check skipped): {selector}")
+                    return element
+        except:
+            continue
+
+    return None
+
+
+async def health_check(page) -> Dict[str, Any]:
+    """
+    Perform health check on current page state
+
+    Returns:
+        Dictionary with health check results
+    """
+    health = {
+        'url': page.url if hasattr(page, 'url') else None,
+        'title': None,
+        'responsive': False,
+        'main_content_present': False,
+    }
+
+    try:
+        # Check if page is responsive
+        try:
+            health['title'] = await page.evaluate('document.title')
+            health['responsive'] = True
+        except:
+            pass
+
+        # Check if main content is present
+        try:
+            main = await page.select('main', timeout=2)
+            health['main_content_present'] = main is not None
+        except:
+            pass
+
+    except Exception as e:
+        logger.warning(f"Health check error: {e}")
+
+    return health
+
+
+async def type_like_human(element, text: str) -> None:
+    """
+    Type text character-by-character with human-like delays
+
+    Args:
+        element: Element to type into
+        text: Text to type
+    """
+    typing_speed = HUMAN_BEHAVIOR['typing_speed']
+
+    for char in text:
+        await element.send_keys(char)
+
+        # Longer delay for spaces (more realistic)
+        if char == ' ':
+            delay = random.uniform(typing_speed['space_min'], typing_speed['space_max'])
+        else:
+            delay = random.uniform(typing_speed['char_min'], typing_speed['char_max'])
+
+        await asyncio.sleep(delay)
+
+
+# ============================================================================
+# MAIN FUNCTION
+# ============================================================================
 
 async def main():
     """Main search automation function"""
@@ -42,72 +225,86 @@ async def main():
                 search_query = args[i]
                 i += 1
 
-        print('\n🔍 Perplexity.ai Search Automation')
-        print('================================\n')
-        print(f'Query: "{search_query}"')
+        logger.info('=' * 60)
+        logger.info('Perplexity.ai Search Automation')
+        logger.info('=' * 60)
+        logger.info(f'Query: "{search_query}"')
         if model:
-            print(f'Model: {model}')
-        print()
+            logger.info(f'Model: {model}')
 
         # Step 1: Load and validate cookies
-        print('📋 Loading authentication cookies...')
+        logger.info('Loading authentication cookies...')
         cookies = load_cookies()
         validate_auth_cookies(cookies)
 
-        # Step 2: Launch browser
-        # Note: Perplexity detects headless mode, so we run with UI visible
-        print('\n🚀 Launching browser (headed mode)...')
+        # Step 2: Launch browser with randomized fingerprint
+        logger.info('Launching browser (headed mode with fingerprint randomization)...')
+
+        # Randomize user agent and viewport for bot detection avoidance
+        user_agent = random.choice(USER_AGENTS)
+        viewport = random.choice(VIEWPORT_SIZES)
+
+        logger.debug(f"Using User-Agent: {user_agent[:50]}...")
+        logger.debug(f"Using viewport: {viewport['width']}x{viewport['height']}")
+
         browser = await uc.start(
-            headless=False,  # Must be False - Perplexity blocks headless browsers
-            browser_args=['--no-sandbox', '--disable-setuid-sandbox']
+            headless=BROWSER_CONFIG['headless'],
+            browser_args=BROWSER_CONFIG['args'] + [
+                f'--user-agent={user_agent}',
+                f'--window-size={viewport["width"]},{viewport["height"]}',
+            ]
         )
 
         # Step 3: Get first page
         page = browser.main_tab
 
         # Step 4: Set cookies BEFORE navigating
-        print('🔐 Setting authentication cookies...')
+        logger.info('Setting authentication cookies...')
         await set_cookies(page, cookies)
-        print('✓ Cookies added to browser')
+        logger.info('Cookies added to browser')
 
         # Step 5: Navigate to Perplexity with cookies already set
-        print('🌐 Navigating to Perplexity.ai...')
+        logger.info('Navigating to Perplexity.ai...')
         await page.get('https://www.perplexity.ai')
-        await asyncio.sleep(3)
+        await human_delay('medium')
 
-        # Step 5: Verify authentication
-        print('🔑 Verifying authentication status...')
+        # Perform health check
+        health = await health_check(page)
+        logger.debug(f"Page health: {health}")
+
+        # Step 6: Verify authentication
+        logger.info('Verifying authentication status...')
         is_authenticated = await verify_authentication(page)
 
         if not is_authenticated:
             raise Exception('Authentication failed - cookies may be expired or invalid')
 
-        print('✓ Successfully authenticated!\n')
+        logger.info('Successfully authenticated!')
 
-        # Step 6: Perform search
-        print('🔎 Performing search...')
+        # Step 7: Perform search
+        logger.info('Performing search...')
         await perform_search(page, search_query)
 
-        # Step 7: Wait for and extract results
-        print('⏳ Waiting for search results...\n')
+        # Step 8: Wait for and extract results
+        logger.info('Waiting for search results...')
 
         # Generate unique screenshot filename (only if screenshots are enabled)
         screenshot_path = None
         if save_screenshot:
             timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
             query_hash = hashlib.md5(search_query.encode()).hexdigest()[:8]
-            screenshot_dir = Path('screenshots')
+            screenshot_dir = Path(SCREENSHOT_CONFIG['directory'])
             screenshot_dir.mkdir(exist_ok=True)
-            screenshot_path = screenshot_dir / f'{timestamp_str}_{query_hash}.png'
+            screenshot_path = screenshot_dir / f'{timestamp_str}_{query_hash}.{SCREENSHOT_CONFIG["format"]}'
 
         results = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
 
-        # Step 8: Display results
+        # Step 9: Display results
         display_results(results)
 
-        # Step 9: Save to database
+        # Step 10: Save to database
         execution_time = time.time() - start_time
-        print(f'\n💾 Saving results to database...')
+        logger.info('Saving results to database...')
         result_id = save_search_result(
             query=search_query,
             answer_text=results['answer'],
@@ -118,11 +315,11 @@ async def main():
             success=success,
             error_message=error_message
         )
-        print(f'✓ Saved as record ID: {result_id}')
-        print(f'✓ Execution time: {execution_time:.2f}s')
+        logger.info(f'Saved as record ID: {result_id}')
+        logger.info(f'Execution time: {execution_time:.2f}s')
 
     except Exception as error:
-        print(f'\n❌ Error: {str(error)}')
+        logger.error(f'Error: {str(error)}', exc_info=True)
         success = False
         error_message = str(error)
 
@@ -139,92 +336,114 @@ async def main():
                 success=False,
                 error_message=error_message
             )
-        except:
-            pass  # Don't fail if database save fails
+        except Exception as db_error:
+            logger.warning(f'Could not save failed result to database: {db_error}')
 
         raise
     finally:
         # Cleanup
         if browser:
-            print('\n🧹 Cleaning up...')
+            logger.info('Cleaning up...')
             browser.stop()
-            print('✓ Browser closed\n')
+            logger.info('Browser closed')
 
 
+@async_retry(max_attempts=2, exceptions=(Exception,))
 async def set_cookies(page, cookies: List[Dict]) -> None:
-    """Set cookies in the browser page"""
+    """
+    Set cookies in the browser page with error handling and verification
+
+    Args:
+        page: Nodriver page object
+        cookies: List of cookie dictionaries
+
+    Raises:
+        Exception: If critical cookies cannot be set
+    """
+    cookies_set = 0
+    critical_cookies_set = 0
+
     for cookie in cookies:
         try:
-            # Use nodriver's browser context to set cookies
-            # The browser.cookies.set_all method expects a list of dicts
             name = cookie.get('name', '')
             value = cookie.get('value', '')
-            domain = cookie.get('domain', '.perplexity.ai')
-            path = cookie.get('path', '/')
+            domain = cookie.get('domain', COOKIE_DEFAULTS['domain'])
+            path = cookie.get('path', COOKIE_DEFAULTS['path'])
 
-            # Build cookie params
-            params = {
-                'name': name,
-                'value': value,
-                'domain': domain,
-                'path': path,
-            }
+            if not name or not value:
+                logger.warning(f'Skipping invalid cookie (missing name or value)')
+                continue
 
-            # Add optional fields
-            if cookie.get('secure'):
-                params['secure'] = True
-            if cookie.get('httpOnly'):
-                params['httpOnly'] = True
-            if 'sameSite' in cookie and cookie['sameSite']:
-                params['sameSite'] = cookie['sameSite']
-            if 'expires' in cookie and cookie['expires'] and cookie['expires'] > 0:
-                params['expires'] = cookie['expires']
-
-            # Use CDP network.set_cookie directly with properly formatted params
+            # Use CDP network.set_cookie with proper parameter handling
             await page.send(uc.cdp.network.set_cookie(
                 name=name,
                 value=value,
                 domain=domain,
                 path=path,
-                secure=cookie.get('secure', False),
-                http_only=cookie.get('httpOnly', False),
-                same_site=uc.cdp.network.CookieSameSite(cookie.get('sameSite', 'Lax')) if cookie.get('sameSite') else None,
-                expires=uc.cdp.network.TimeSinceEpoch(cookie['expires']) if cookie.get('expires') and cookie['expires'] > 0 else None
+                secure=cookie.get('secure', COOKIE_DEFAULTS['secure']),
+                http_only=cookie.get('httpOnly', COOKIE_DEFAULTS['httpOnly']),
+                same_site=uc.cdp.network.CookieSameSite(
+                    cookie.get('sameSite', COOKIE_DEFAULTS['sameSite'])
+                ) if cookie.get('sameSite') else None,
+                expires=uc.cdp.network.TimeSinceEpoch(cookie['expires'])
+                    if cookie.get('expires') and cookie['expires'] > 0 else None
             ))
+
+            cookies_set += 1
+
+            # Track critical cookies
+            if name in REQUIRED_COOKIES:
+                critical_cookies_set += 1
+                logger.debug(f'Set critical cookie: {name}')
+            else:
+                logger.debug(f'Set cookie: {name}')
+
         except Exception as e:
-            print(f'⚠ Warning: Could not set cookie {cookie.get("name")}: {e}')
+            cookie_name = cookie.get('name', 'unknown')
+            if cookie_name in REQUIRED_COOKIES:
+                logger.error(f'Failed to set critical cookie {cookie_name}: {e}')
+                raise  # Fail fast for critical cookies
+            else:
+                logger.warning(f'Could not set cookie {cookie_name}: {e}')
+
+    logger.info(f'Set {cookies_set} cookies ({critical_cookies_set} critical)')
+
+    # Verify critical cookies were set
+    if critical_cookies_set < len(REQUIRED_COOKIES):
+        raise Exception(f'Not all critical cookies were set ({critical_cookies_set}/{len(REQUIRED_COOKIES)})')
+
+    # Add small delay to ensure cookies are applied
+    await human_delay('short')
 
 
 async def verify_authentication(page) -> bool:
-    """Verify that the user is authenticated on Perplexity.ai"""
+    """
+    Verify that the user is authenticated on Perplexity.ai
+
+    Returns:
+        True if authenticated, False otherwise
+    """
     try:
-        # Wait a moment for the page to fully load
-        await asyncio.sleep(3)
+        # Wait for page to fully load
+        await human_delay('medium')
 
         # Check for sign-in button (should NOT be present if authenticated)
         try:
             sign_in_elements = await page.select_all('button')
             for btn in sign_in_elements:
-                text = await btn.text
+                text = btn.text  # .text is a property, not async
                 if text and ('Sign In' in text or 'Log In' in text):
-                    print('⚠ Found visible "Sign In" button - not authenticated')
+                    logger.warning('Found visible "Sign In" button - not authenticated')
                     return False
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f'Sign-in button check failed: {e}')
 
         # Check for authenticated sidebar elements
-        auth_indicators = [
-            '[data-testid="sidebar-new-thread"]',  # New Thread button
-            '[data-testid="sidebar-home"]',         # Home navigation
-            '[aria-label="New Thread"]',            # New Thread button by aria-label
-            '[aria-label="Account"]',               # Account button
-        ]
-
-        for selector in auth_indicators:
+        for selector in SELECTORS['auth_indicators']:
             try:
-                element = await page.select(selector)
+                element = await page.select(selector, timeout=TIMEOUTS['auth_verification'])
                 if element:
-                    print(f'✓ Found authenticated element: {selector}')
+                    logger.info(f'Found authenticated element: {selector}')
                     return True
             except:
                 continue
@@ -232,66 +451,64 @@ async def verify_authentication(page) -> bool:
         # Check for "Account" text in page (another strong indicator)
         try:
             body = await page.select('body')
-            body_text = await body.text
-            if body_text and 'Account' in body_text and 'Home' in body_text:
-                print('✓ Found "Account" and "Home" navigation - authenticated')
-                return True
-        except:
-            pass
+            if body:
+                body_text = body.text_all  # .text_all is a property, no await
+                if body_text and 'Account' in body_text and 'Home' in body_text:
+                    logger.info('Found "Account" and "Home" navigation - authenticated')
+                    return True
+        except Exception as e:
+            logger.debug(f'Account text check failed: {e}')
 
-        print('⚠ Could not verify authentication - cookies may be expired')
+        logger.warning('Could not verify authentication - cookies may be expired')
         return False
 
     except Exception as error:
-        print(f'Error during authentication verification: {error}')
+        logger.error(f'Error during authentication verification: {error}')
         return False
 
 
 async def perform_search(page, query: str) -> None:
-    """Perform a search query on Perplexity.ai"""
+    """
+    Perform a search query on Perplexity.ai with human-like behavior
+
+    Args:
+        page: Nodriver page object
+        query: Search query string
+    """
     try:
-        # Perplexity uses a contenteditable div or textarea for input
-        # Try multiple selectors to find the search input
-        search_input_selectors = [
-            '[contenteditable="true"]',
-            'textarea[placeholder*="Ask"]',
-            '[role="textbox"]',
-            'div[contenteditable="true"]',
-            'textarea',
-        ]
-
-        search_input = None
-        used_selector = ''
-
-        for selector in search_input_selectors:
-            try:
-                await asyncio.sleep(1)
-                search_input = await page.select(selector)
-                if search_input:
-                    used_selector = selector
-                    break
-            except:
-                continue
+        # Find search input using helper function
+        search_input = await find_interactive_element(
+            page,
+            SELECTORS['search_input'],
+            timeout=TIMEOUTS['element_select']
+        )
 
         if not search_input:
             raise Exception('Could not find search input element')
 
-        print(f'✓ Found search input: {used_selector}')
+        logger.info('Found search input')
 
-        # Click to focus the input
+        # Click to focus the input with human delay
         await search_input.click()
-        await asyncio.sleep(0.5)
+        await human_delay('short')
 
-        # Type the query
-        await search_input.send_keys(query)
-        print(f'✓ Query entered: "{query}"')
+        # Type the query character-by-character (most realistic)
+        logger.info(f'Typing query: "{query}"')
+        await type_like_human(search_input, query)
+        logger.info('Query entered')
 
-        # Submit the search (press Enter key)
-        # First try regular newline
+        # Human delay before submitting
+        await human_delay('short')
+
+        # Submit the search using triple fallback approach
+        # Method 1: Send newline character
         await search_input.send_keys('\n')
-        print('✓ Sent newline character')
+        logger.debug('Sent newline character')
 
-        # Alternative: Try using CDP to send Enter key event directly
+        # Wait briefly for initial response
+        await human_delay('short')
+
+        # Method 2: Try using CDP to send Enter key event directly
         try:
             await page.send(uc.cdp.input_.dispatch_key_event(
                 type_='keyDown',
@@ -307,81 +524,137 @@ async def perform_search(page, query: str) -> None:
                 windows_virtual_key_code=13,
                 native_virtual_key_code=13
             ))
-            print('✓ Sent Enter key event via CDP')
+            logger.debug('Sent Enter key event via CDP')
         except Exception as e:
-            print(f'   CDP Enter key fallback: {e}')
+            logger.debug(f'CDP Enter key fallback error: {e}')
 
         # Wait for search to register
-        await asyncio.sleep(1.5)
+        await human_delay('medium')
 
-        # Fallback: Try clicking search button if Enter didn't work
+        # Method 3: Fallback - try clicking search button if Enter didn't work
         try:
-            # Look for search/submit button
-            search_button_selectors = [
-                'button[type="submit"]',
-                'button[aria-label*="search" i]',
-                'button[aria-label*="submit" i]',
-                'button[title*="search" i]',
-                'button svg',  # Sometimes the search icon is in a button
-                'button[class*="search" i]'
-            ]
+            search_button = await find_interactive_element(
+                page,
+                SELECTORS['search_button'],
+                timeout=2
+            )
 
-            search_button = None
-            for selector in search_button_selectors:
-                try:
-                    search_button = await page.select(selector, timeout=2)
-                    if search_button:
-                        print(f'   Found search button with selector: {selector}')
-                        await search_button.click()
-                        print('   ✓ Clicked search button as fallback')
-                        break
-                except:
-                    continue
-
+            if search_button:
+                logger.debug('Found search button, clicking as fallback')
+                await search_button.click()
+                await human_delay('short')
         except Exception as e:
-            # Fallback failed, but that's OK if Enter worked
-            print(f'   Note: Search button fallback not needed or not found')
+            logger.debug(f'Search button fallback not needed: {e}')
 
-        print('✓ Search submitted')
+        logger.info('Search submitted')
 
     except Exception as error:
         raise Exception(f'Failed to perform search: {str(error)}')
 
 
+async def wait_for_content_stability(page, max_wait: int = None) -> bool:
+    """
+    Wait for answer content to stabilize using multiple indicators
+
+    Args:
+        page: Nodriver page object
+        max_wait: Maximum time to wait (defaults to STABILITY_CONFIG)
+
+    Returns:
+        True if content stabilized, False if timeout
+    """
+    if max_wait is None:
+        max_wait = TIMEOUTS['content_stability']
+
+    logger.info('Waiting for answer to be generated...')
+
+    check_interval = STABILITY_CONFIG['check_interval']
+    stable_threshold = STABILITY_CONFIG['stable_threshold']
+    min_content_length = STABILITY_CONFIG['min_content_length']
+
+    stable_count = 0
+    last_length = 0
+    last_hash = ""
+
+    start_time = asyncio.get_event_loop().time()
+
+    while (asyncio.get_event_loop().time() - start_time) < max_wait:
+        try:
+            # Get main content
+            main_content = await page.select('main', timeout=2)
+            if not main_content:
+                await asyncio.sleep(check_interval)
+                continue
+
+            # Use text_all to get full content (no await!)
+            current_text = main_content.text_all
+            current_length = len(current_text) if current_text else 0
+
+            # Use hash for better change detection (catches small edits)
+            current_hash = hashlib.md5(current_text.encode()).hexdigest() if current_text else ""
+
+            # Check if content meets minimum threshold and has stabilized
+            if current_length >= min_content_length:
+                # Content is substantial, check if stable
+                if current_hash == last_hash and current_length == last_length:
+                    stable_count += 1
+                    if stable_count >= stable_threshold:
+                        logger.info(f'Answer generation complete (content stable at {current_length} chars)')
+                        return True
+                else:
+                    # Content changed, reset counter
+                    stable_count = 0
+                    last_hash = current_hash
+                    last_length = current_length
+                    logger.debug(f'Content changing: {current_length} chars')
+            else:
+                # Not enough content yet
+                stable_count = 0
+                last_hash = current_hash
+                last_length = current_length
+
+        except Exception as e:
+            logger.debug(f'Stability check error: {e}')
+
+        await asyncio.sleep(check_interval)
+
+    # Timeout reached
+    logger.warning(f'Timeout after {max_wait}s, proceeding with current content...')
+    return False
+
+
 async def extract_search_results(page, screenshot_path: Optional[str]) -> Dict:
-    """Extract search results from the page"""
+    """
+    Extract search results from the page with multiple fallback strategies
+
+    Args:
+        page: Nodriver page object
+        screenshot_path: Path to save screenshot (if enabled)
+
+    Returns:
+        Dictionary with 'answer' and 'sources' keys
+    """
     try:
-        print('   Checking if search initiated...')
+        logger.info('Checking if search initiated...')
 
         # First, verify that the search actually started
-        # Look for loading indicators
-        max_wait_for_start = 10  # seconds
         search_started = False
         start_time = asyncio.get_event_loop().time()
 
-        while (asyncio.get_event_loop().time() - start_time) < max_wait_for_start:
-            # Check for various indicators that search has started
-            indicators = [
-                # URL change
-                lambda: page.url and '/search' in page.url,
-                # Loading text
-                lambda: page.select('[class*="thinking" i]', timeout=1),
-                lambda: page.select('[class*="loading" i]', timeout=1),
-                lambda: page.select('[class*="generating" i]', timeout=1),
-                # Spinner or animation
-                lambda: page.select('[class*="spinner" i]', timeout=1),
-                lambda: page.select('[class*="animate" i]', timeout=1),
-                # Answer container appearing (even if empty)
-                lambda: page.select('[data-testid*="answer"]', timeout=1),
-                lambda: page.select('main [class*="response" i]', timeout=1)
-            ]
+        while (asyncio.get_event_loop().time() - start_time) < TIMEOUTS['search_initiation']:
+            # Check for URL change (most reliable indicator)
+            if page.url and '/search' in page.url:
+                search_started = True
+                logger.info('Search initiated (detected URL change)')
+                break
 
-            for check in indicators:
+            # Check for loading indicators from config
+            for selector in SELECTORS['loading_indicators']:
                 try:
-                    result = await check()
-                    if result:
+                    element = await page.select(selector, timeout=1)
+                    if element:
                         search_started = True
-                        print(f'   ✓ Search initiated (detected indicator)')
+                        logger.info(f'Search initiated (detected: {selector})')
                         break
                 except:
                     continue
@@ -392,105 +665,74 @@ async def extract_search_results(page, screenshot_path: Optional[str]) -> Dict:
             await asyncio.sleep(0.5)
 
         if not search_started:
-            print('   ⚠ Warning: Could not confirm search started, proceeding anyway...')
+            logger.warning('Could not confirm search started, proceeding anyway...')
 
-        print('   Waiting for answer to be generated...')
+        # Use improved stability detection
+        await wait_for_content_stability(page)
 
-        # Now wait for the answer to be fully generated
-        # Use a smarter approach: wait until content stabilizes
-        max_wait_time = 30  # Maximum seconds to wait
-        check_interval = 2  # Check every 2 seconds
-        stable_checks = 0
-        last_content_length = 0
+        # Additional short wait to ensure rendering complete
+        await human_delay('short')
 
-        start_time = asyncio.get_event_loop().time()
-        while (asyncio.get_event_loop().time() - start_time) < max_wait_time:
-            # Check if there's content and if it's stable
-            try:
-                main_content = await page.select('main', timeout=2)
-                if main_content:
-                    current_text = await main_content.text
-                    current_length = len(current_text) if current_text else 0
-
-                    # Check if content has stabilized (no change for 2 checks)
-                    if current_length > 100 and current_length == last_content_length:
-                        stable_checks += 1
-                        if stable_checks >= 2:
-                            print(f'   ✓ Answer generation complete (content stable)')
-                            break
-                    else:
-                        stable_checks = 0
-                        last_content_length = current_length
-            except:
-                pass
-
-            await asyncio.sleep(check_interval)
-
-        # Additional short wait to ensure everything is rendered
-        await asyncio.sleep(2)
-
-        print('   ✓ Extracting results...')
+        logger.info('Extracting results...')
 
         # Take screenshot for debugging (if enabled)
         if screenshot_path:
-            await page.save_screenshot(screenshot_path, full_page=True)
-            print(f'   📸 Screenshot saved: {screenshot_path}')
+            await page.save_screenshot(screenshot_path, full_page=SCREENSHOT_CONFIG['full_page'])
+            logger.info(f'Screenshot saved: {screenshot_path}')
 
-        # Extract the main answer/response
+        # Extract the main answer/response using multiple strategies
         answer_text = ''
 
-        # Method 1: Simple approach - get all text from main and clean it
+        # Strategy 1: Marker-based extraction (most accurate)
         try:
-            # Wait a bit more for content to fully render
-            await asyncio.sleep(3)
+            await human_delay('medium')  # Ensure content is fully rendered
 
             main_element = await page.select('main')
             if main_element:
                 # Get all text content including children (text_all gets all descendants)
                 full_text = main_element.text_all
-                print(f'   Debug: Full main text length: {len(full_text) if full_text else 0}')
+                logger.debug(f'Full main text length: {len(full_text) if full_text else 0}')
 
                 if full_text:
                     # text_all concatenates with spaces, so we need a different approach
                     # Look for the answer portion between known markers
                     text_lower = full_text.lower()
 
-                    # Find where answer starts (after "1 step completed" or "answer images")
+                    # Find where answer starts
                     start_idx = -1
-                    start_markers = ['1 step completed', 'answer images', 'images ']
-                    for marker in start_markers:
-                        idx = text_lower.find(marker)
+                    for marker in EXTRACTION_MARKERS['start']:
+                        idx = text_lower.find(marker.lower())
                         if idx > 0:
                             start_idx = idx + len(marker)
+                            logger.debug(f'Found start marker: {marker}')
                             break
 
-                    # Find where answer ends (before "ask a follow-up")
+                    # Find where answer ends
                     end_idx = len(full_text)
-                    end_markers = ['ask a follow-up', 'ask follow-up']
-                    for marker in end_markers:
-                        idx = text_lower.find(marker, start_idx if start_idx > 0 else 0)
+                    for marker in EXTRACTION_MARKERS['end']:
+                        idx = text_lower.find(marker.lower(), start_idx if start_idx > 0 else 0)
                         if idx > 0:
                             end_idx = min(end_idx, idx)
+                            logger.debug(f'Found end marker: {marker}')
 
                     if start_idx > 0 and start_idx < end_idx:
                         answer_text = full_text[start_idx:end_idx].strip()
 
                         # Clean up any remaining UI elements
-                        ui_elements = ['Home Discover', 'Spaces Finance', 'Upgrade Install', 'Answer Images']
-                        for ui_elem in ui_elements:
+                        for ui_elem in EXTRACTION_MARKERS['ui_elements']:
                             answer_text = answer_text.replace(ui_elem, '')
 
                         answer_text = answer_text.strip()
                         if answer_text:
-                            print(f'   Found answer text ({len(answer_text)} chars)')
-
+                            logger.info(f'Strategy 1: Found answer text ({len(answer_text)} chars)')
 
         except Exception as e:
-            print(f'   Error extracting answer: {e}')
+            logger.warning(f'Strategy 1 extraction error: {e}')
 
-        # Method 2: If no answer found, try getting all text from main
+        # Strategy 2: Clean text extraction (fallback)
         if not answer_text:
             try:
+                logger.debug('Trying strategy 2: Clean text extraction')
                 main_content = await page.select('main')
                 if main_content:
                     full_text = main_content.text_all
@@ -498,36 +740,66 @@ async def extract_search_results(page, screenshot_path: Optional[str]) -> Dict:
                         # Remove known UI elements and clean up
                         lines = full_text.split('\n')
                         cleaned_lines = []
-                        skip_patterns = ['Home', 'Discover', 'Spaces', 'Finance', 'Install',
-                                       'Upgrade', 'Account', 'Ask a follow-up', 'Thinking...']
 
                         for line in lines:
                             line = line.strip()
-                            if line and not any(pattern in line for pattern in skip_patterns):
+                            if line and not any(pattern in line for pattern in EXTRACTION_MARKERS['skip_patterns']):
                                 cleaned_lines.append(line)
 
                         if cleaned_lines:
                             answer_text = '\n'.join(cleaned_lines)
-            except:
-                pass
+                            logger.info(f'Strategy 2: Found answer text ({len(answer_text)} chars)')
+            except Exception as e:
+                logger.warning(f'Strategy 2 extraction error: {e}')
+
+        # Strategy 3: Direct answer container (last resort)
+        if not answer_text:
+            try:
+                logger.debug('Trying strategy 3: Direct answer container')
+                answer_selectors = [
+                    '[data-testid*="answer"]',
+                    '[class*="answer"]',
+                    'main article',
+                    'main [role="article"]',
+                ]
+
+                for selector in answer_selectors:
+                    try:
+                        element = await page.select(selector, timeout=2)
+                        if element:
+                            text = element.text_all
+                            if text and len(text) > 50:
+                                answer_text = text.strip()
+                                logger.info(f'Strategy 3: Found answer via {selector} ({len(answer_text)} chars)')
+                                break
+                    except:
+                        continue
+            except Exception as e:
+                logger.warning(f'Strategy 3 extraction error: {e}')
 
         # Extract sources/citations
         sources = []
         try:
-            source_elements = await page.select_all('[data-testid*="source"] a, footer a[href*="http"]')
-            for el in source_elements[:10]:
+            source_elements = await page.select_all(SELECTORS['sources'])
+            logger.debug(f'Found {len(source_elements)} potential source elements')
+
+            for el in source_elements[:10]:  # Limit to top 10 sources
                 try:
-                    href = await el.get_attribute('href')
-                    text = await el.text
+                    href = el.attrs.get('href') if hasattr(el, 'attrs') else None
+                    text = el.text_all  # .text_all is a property, no await
+
                     if href and text and len(text.strip()) > 3:
                         sources.append({
                             'url': href,
                             'text': text.strip()
                         })
-                except:
+                except Exception as e:
+                    logger.debug(f'Error extracting source: {e}')
                     continue
-        except:
-            pass
+
+            logger.info(f'Extracted {len(sources)} sources')
+        except Exception as e:
+            logger.warning(f'Could not extract sources: {e}')
 
         return {
             'answer': answer_text or 'No answer text extracted',
@@ -535,7 +807,7 @@ async def extract_search_results(page, screenshot_path: Optional[str]) -> Dict:
         }
 
     except Exception as error:
-        print(f'Warning: Could not extract complete results: {error}')
+        logger.error(f'Could not extract complete results: {error}')
         return {
             'answer': 'Failed to extract results - page structure may have changed',
             'sources': []
@@ -543,27 +815,33 @@ async def extract_search_results(page, screenshot_path: Optional[str]) -> Dict:
 
 
 def display_results(results: Dict) -> None:
-    """Display search results in a formatted way"""
-    print('═══════════════════════════════════════════════════════════')
-    print('📊 SEARCH RESULTS')
-    print('═══════════════════════════════════════════════════════════\n')
+    """
+    Display search results in a formatted way
+
+    Args:
+        results: Dictionary with 'answer' and 'sources' keys
+    """
+    print('\n' + '=' * 60)
+    print('SEARCH RESULTS')
+    print('=' * 60 + '\n')
 
     answer = results.get('answer', 'No answer available')
     print('ANSWER:')
-    print('-------')
+    print('-' * 60)
     print(answer if answer is not None else 'No answer available')
     print()
 
     sources = results.get('sources', [])
     if sources and isinstance(sources, list) and len(sources) > 0:
-        print('\nSOURCES:')
-        print('--------')
+        print('SOURCES:')
+        print('-' * 60)
         for index, source in enumerate(sources):
             if isinstance(source, dict):
                 print(f"{index + 1}. {source.get('text', 'N/A')}")
                 print(f"   {source.get('url', 'N/A')}")
+                print()
 
-    print('\n═══════════════════════════════════════════════════════════')
+    print('=' * 60 + '\n')
 
 
 if __name__ == '__main__':
@@ -571,8 +849,8 @@ if __name__ == '__main__':
         # Run the async main function
         asyncio.run(main())
     except KeyboardInterrupt:
-        print('\n\n⚠ Interrupted by user')
+        logger.warning('\nInterrupted by user')
         sys.exit(0)
     except Exception as e:
-        print(f'\n💥 Fatal error: {e}')
+        logger.error(f'\nFatal error: {e}', exc_info=True)
         sys.exit(1)
