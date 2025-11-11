@@ -3,6 +3,7 @@ auth.json
 minimal-auth.json
 .env
 *.log
+*.png
 
 # Python
 venv/
