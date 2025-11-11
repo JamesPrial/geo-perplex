@@ -93,7 +93,9 @@ The tool requires valid Perplexity.ai authentication cookies to function.
 
 ## Usage
 
-### Basic Usage
+### Running Searches
+
+#### Basic Usage
 
 Run a search with a default query:
 
@@ -101,32 +103,112 @@ Run a search with a default query:
 python -m src.search
 ```
 
-### Custom Search Query
+#### Custom Search Query
 
-Provide your own search query as a command-line argument:
+Provide your own search query:
 
 ```bash
 python -m src.search "What is GEO?"
 ```
 
-### Examples
+#### Track AI Model
+
+Specify which AI model you're using for later comparison:
+
+```bash
+python -m src.search "What are the best CRM tools?" --model gpt-4
+```
+
+#### Disable Screenshots
+
+Skip screenshot generation to save disk space:
+
+```bash
+python -m src.search "What is Python?" --no-screenshot
+```
+
+#### Examples
 
 Research how LLMs view a specific product:
 ```bash
-python -m src.search "What are the best project management tools for startups?"
+python -m src.search "What are the best project management tools for startups?" --model default
 ```
 
 Analyze competitor positioning:
 ```bash
-python -m src.search "Compare Slack vs Microsoft Teams for remote teams"
+python -m src.search "Compare Slack vs Microsoft Teams for remote teams" --model claude-3
 ```
 
 Test brand visibility:
 ```bash
-python -m src.search "What are the top CRM solutions for small businesses?"
+python -m src.search "What are the top CRM solutions for small businesses?" --model gpt-4
+```
+
+### Analyzing Search Results
+
+All search results are automatically saved to a SQLite database. Use the analysis tool to query and compare results:
+
+#### View Recent Searches
+
+```bash
+# Show 10 most recent searches
+python -m src.analyze recent
+
+# Show 20 most recent searches with full answers
+python -m src.analyze recent --limit 20 --full
+```
+
+#### List All Queries
+
+```bash
+python -m src.analyze list-queries
+```
+
+#### List All Models
+
+```bash
+python -m src.analyze list-models
+```
+
+#### Search by Query
+
+View all results for a specific query:
+
+```bash
+python -m src.analyze query --query "What is GEO?"
+
+# Filter by model
+python -m src.analyze query --query "What is GEO?" --model gpt-4
+
+# Show full answers
+python -m src.analyze query --query "What is GEO?" --full
+```
+
+#### Search by Model
+
+View all results from a specific model:
+
+```bash
+python -m src.analyze model --model gpt-4
+
+# Limit results
+python -m src.analyze model --model claude-3 --limit 10
+```
+
+#### Compare Models
+
+Compare how different AI models answer the same query:
+
+```bash
+python -m src.analyze compare --query "What are the best project management tools?"
+
+# Show full answers for comparison
+python -m src.analyze compare --query "What is Python?" --full
 ```
 
 ### Expected Output
+
+#### Search Execution
 
 The tool will display progress as it runs:
 
@@ -135,6 +217,7 @@ The tool will display progress as it runs:
 ================================
 
 Query: "What is GEO?"
+Model: gpt-4
 
 📋 Loading authentication cookies...
 ✓ Loaded 4 cookies from /path/to/auth.json
@@ -170,13 +253,79 @@ SOURCES:
 
 ═══════════════════════════════════════════════════════════
 
+💾 Saving results to database...
+✓ Saved as record ID: 42
+✓ Execution time: 15.32s
+
 🧹 Cleaning up...
 ✓ Browser closed
 ```
 
-A screenshot of the results page is automatically saved as `search-results-screenshot.png` for debugging purposes.
+Screenshots are automatically saved in the `screenshots/` directory with unique timestamped filenames (unless `--no-screenshot` is used).
+
+#### Analysis Output
+
+When analyzing stored results:
+
+```bash
+$ python -m src.analyze recent --limit 2
+```
+
+```
+📊 Most recent 2 search results:
+
+================================================================================
+ID: 42
+Query: What is GEO?
+Model: gpt-4
+Timestamp: 2025-11-11 14:30:45
+Execution Time: 15.32s
+Success: ✓
+Screenshot: screenshots/20251111_143045_a1b2c3d4.png
+
+Answer (297 chars):
+--------------------------------------------------------------------------------
+Generative Engine Optimization (GEO) is a field focused on optimizing content
+for AI-powered search engines and language models...
+
+Sources (2):
+--------------------------------------------------------------------------------
+1. GEO Guide
+   https://example.com/geo-guide
+2. AI Search Optimization
+   https://example.com/ai-search
+
+================================================================================
+ID: 41
+Query: What are the best CRM tools?
+Model: default
+Timestamp: 2025-11-11 14:25:12
+Execution Time: 12.84s
+Success: ✓
+...
+```
 
 ## How It Works
+
+### Database Storage
+
+All search results are automatically saved to a SQLite database (`search_results.db`) with the following information:
+- **Query text**: The search query submitted
+- **Answer text**: The full response from Perplexity
+- **Sources**: List of cited sources with URLs
+- **Model**: The AI model used (if specified)
+- **Timestamp**: When the search was performed
+- **Execution time**: How long the search took
+- **Screenshot path**: Location of the saved screenshot
+- **Success status**: Whether the search completed successfully
+- **Error messages**: Details of any failures
+
+This allows you to:
+- Track how different AI models respond to the same query
+- Analyze changes in responses over time
+- Build a research database for GEO analysis
+- Compare competitor mentions across queries
+- Export data for further analysis
 
 ### Cookie-Based Authentication
 
@@ -221,9 +370,13 @@ geo-perplex/
 ├── src/
 │   ├── __init__.py              # Package initialization
 │   ├── search.py                # Main search automation script
+│   ├── analyze.py               # Results analysis and comparison CLI
 │   └── utils/
 │       ├── __init__.py          # Utils package initialization
-│       └── cookies.py           # Cookie loading and validation utilities
+│       ├── cookies.py           # Cookie loading and validation utilities
+│       └── storage.py           # SQLite database storage utilities
+├── screenshots/                 # Screenshot storage (gitignored)
+├── search_results.db            # SQLite database (gitignored)
 ├── auth.json                    # Your authentication cookies (gitignored)
 ├── auth.json.example            # Example cookie format
 ├── requirements.txt             # Python dependencies
@@ -235,18 +388,35 @@ geo-perplex/
 ### Key Files
 
 - **`src/search.py`**: Main automation script that orchestrates the entire search process
-  - Loads cookies
-  - Launches browser with Nodriver
-  - Authenticates with Perplexity
-  - Performs search
-  - Extracts and displays results
+  - Loads cookies and validates authentication
+  - Launches browser with Nodriver in headed mode
+  - Authenticates with Perplexity using cookies
+  - Performs search and extracts results
+  - Saves results to database
+  - Generates screenshots with unique filenames
+
+- **`src/analyze.py`**: Results analysis and comparison CLI tool
+  - Query search results by text, model, or date
+  - Compare how different AI models answer the same query
+  - List all unique queries and models in database
+  - View recent search history
+  - Export data for further analysis
 
 - **`src/utils/cookies.py`**: Cookie management utilities
   - Loads cookies from `auth.json`
   - Validates required authentication cookies
   - Provides helpful error messages
 
+- **`src/utils/storage.py`**: SQLite database utilities
+  - Initialize database schema with proper indexes
+  - Save search results with metadata
+  - Query results by query text, model, or timestamp
+  - Compare results across different models
+  - Retrieve unique queries and models
+
 - **`auth.json`**: Your personal authentication cookies (not tracked by git)
+
+- **`search_results.db`**: SQLite database containing all search results (not tracked by git)
 
 ## Troubleshooting
 
@@ -332,17 +502,40 @@ The tool uses several strategies to avoid detection:
 4. **Cookie Management**: Requires manual cookie refresh every 30 days
 5. **Rate Limiting**: Excessive use may trigger Perplexity's rate limiting
 
+### Database Management
+
+**Location**: The database is stored at `search_results.db` in the project root directory.
+
+**Backup**: To backup your research data, simply copy the `search_results.db` file:
+```bash
+cp search_results.db search_results_backup_$(date +%Y%m%d).db
+```
+
+**Reset**: To start fresh, delete the database file (it will be recreated on next search):
+```bash
+rm search_results.db
+```
+
+**Direct Access**: You can query the database directly with any SQLite client:
+```bash
+sqlite3 search_results.db "SELECT query, model, timestamp FROM search_results ORDER BY timestamp DESC LIMIT 10;"
+```
+
 ### Future Improvements
 
 Potential enhancements for future development:
 
 - Automated cookie refresh mechanism
 - Better result extraction with more robust selectors
-- Support for multiple search queries in batch
-- Export results to JSON/CSV format
+- Support for multiple search queries in batch mode
+- Export results to JSON/CSV/Excel formats
 - Headless mode using advanced evasion techniques
 - Integration with proxy services for better reliability
 - Retry logic with exponential backoff
+- Web dashboard for visualizing GEO trends
+- Automated model switching within Perplexity UI
+- Statistical analysis of brand/product mentions
+- Integration with other AI search engines (ChatGPT, Claude, etc.)
 
 ## License
 
