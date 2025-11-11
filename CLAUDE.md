@@ -148,18 +148,6 @@ python -m src.analyze model --model gpt-4 --limit 20
 python -m src.analyze compare --query "What are the best project management tools?" --full
 ```
 
-### Environment Setup
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# or
-venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-```
 
 ### Cookie Setup
 
