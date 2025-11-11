@@ -9,12 +9,13 @@ import nodriver as uc
 from src.config import REQUIRED_COOKIES, COOKIE_DEFAULTS, SELECTORS, TIMEOUTS
 from src.utils.decorators import async_retry
 from src.browser.interactions import human_delay
+from src.types import NodriverPage
 
 logger = logging.getLogger(__name__)
 
 
 @async_retry(max_attempts=2, exceptions=(Exception,))
-async def set_cookies(page, cookies: List[Dict]) -> None:
+async def set_cookies(page: NodriverPage, cookies: List[Dict]) -> None:
     """
     Set cookies in the browser page with error handling and verification
 
@@ -81,7 +82,7 @@ async def set_cookies(page, cookies: List[Dict]) -> None:
     await human_delay('short')
 
 
-async def verify_authentication(page) -> bool:
+async def verify_authentication(page: NodriverPage) -> bool:
     """
     Verify that the user is authenticated on Perplexity.ai
 

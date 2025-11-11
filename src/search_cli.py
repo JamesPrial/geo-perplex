@@ -20,7 +20,7 @@ from src.browser.manager import launch_browser
 from src.browser.auth import set_cookies, verify_authentication
 from src.browser.interactions import health_check, human_delay
 from src.search.executor import perform_search
-from src.search.extractor import extract_search_results
+from src.search.extractor import extract_search_results, ExtractionResult
 
 # Configure logging
 logging.basicConfig(
@@ -117,18 +117,24 @@ async def main():
             screenshot_dir.mkdir(exist_ok=True)
             screenshot_path = screenshot_dir / f'{timestamp_str}_{query_hash}.{SCREENSHOT_CONFIG["format"]}'
 
-        results = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
+        result = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
 
         # Step 9: Display results
-        display_results(results)
+        display_results(result)
+
+        # Update success status based on extraction result
+        success = result.success
+        if not result.success:
+            error_message = result.error
+            logger.warning(f'Extraction failed: {error_message}')
 
         # Step 10: Save to database
         execution_time = time.time() - start_time
         logger.info('Saving results to database...')
         result_id = save_search_result(
             query=search_query,
-            answer_text=results['answer'],
-            sources=results['sources'],
+            answer_text=result.answer_text,
+            sources=result.sources,
             screenshot_path=str(screenshot_path) if screenshot_path else None,
             model=model,
             execution_time=execution_time,
@@ -137,6 +143,9 @@ async def main():
         )
         logger.info(f'Saved as record ID: {result_id}')
         logger.info(f'Execution time: {execution_time:.2f}s')
+        if result.strategy_used:
+            logger.info(f'Extraction strategy: {result.strategy_used}')
+        logger.info(f'Extraction time: {result.extraction_time:.2f}s')
 
     except Exception as error:
         logger.error(f'Error: {str(error)}', exc_info=True)
@@ -168,28 +177,37 @@ async def main():
             logger.info('Browser closed')
 
 
-def display_results(results: Dict) -> None:
+def display_results(result: ExtractionResult) -> None:
     """
     Display search results in a formatted way
 
     Args:
-        results: Dictionary with 'answer' and 'sources' keys
+        result: ExtractionResult object with answer, sources, and metadata
     """
     print('\n' + '=' * 60)
     print('SEARCH RESULTS')
     print('=' * 60 + '\n')
 
-    answer = results.get('answer', 'No answer available')
-    print('ANSWER:')
-    print('-' * 60)
-    print(answer if answer is not None else 'No answer available')
+    # Show extraction status
+    status_symbol = '✓' if result.success else '✗'
+    print(f'Status: {status_symbol} {"Success" if result.success else "Failed"}')
+    if result.strategy_used:
+        print(f'Strategy: {result.strategy_used}')
+    if result.error:
+        print(f'Error: {result.error}')
     print()
 
-    sources = results.get('sources', [])
-    if sources and isinstance(sources, list) and len(sources) > 0:
+    # Show answer
+    print('ANSWER:')
+    print('-' * 60)
+    print(result.answer_text if result.answer_text else 'No answer available')
+    print()
+
+    # Show sources
+    if result.sources and len(result.sources) > 0:
         print('SOURCES:')
         print('-' * 60)
-        for index, source in enumerate(sources):
+        for index, source in enumerate(result.sources):
             if isinstance(source, dict):
                 print(f"{index + 1}. {source.get('text', 'N/A')}")
                 print(f"   {source.get('url', 'N/A')}")

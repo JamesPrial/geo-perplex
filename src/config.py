@@ -3,45 +3,166 @@ Configuration settings for GEO-Perplex automation tool
 Centralizes all constants, timeouts, and selectors for easy maintenance
 """
 
-# Browser Configuration
-BROWSER_CONFIG = {
-    'headless': False,  # Must be False - Perplexity blocks headless browsers
-    'args': ['--no-sandbox', '--disable-setuid-sandbox'],
-}
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Any
 
-# Human-like behavior settings
-HUMAN_BEHAVIOR = {
-    'typing_speed': {
-        'char_min': 0.05,  # Minimum delay between characters (seconds)
-        'char_max': 0.15,  # Maximum delay between characters (seconds)
-        'space_min': 0.1,  # Minimum delay for space characters (seconds)
-        'space_max': 0.2,  # Maximum delay for space characters (seconds)
-    },
-    'delays': {
-        'short_min': 0.3,    # Short pause minimum (seconds)
-        'short_max': 0.7,    # Short pause maximum (seconds)
-        'medium_min': 0.5,   # Medium pause minimum (seconds)
-        'medium_max': 1.5,   # Medium pause maximum (seconds)
-        'long_min': 1.0,     # Long pause minimum (seconds)
-        'long_max': 2.5,     # Long pause maximum (seconds)
-    },
-}
 
-# Timeouts
-TIMEOUTS = {
-    'page_load': 10,           # Page load timeout (seconds)
-    'element_select': 5,       # Default element selection timeout (seconds)
-    'search_initiation': 10,   # Wait for search to start (seconds)
-    'content_stability': 30,   # Wait for content to stabilize (seconds)
-    'auth_verification': 5,    # Authentication verification timeout (seconds)
-}
+@dataclass
+class BrowserConfig:
+    """Browser configuration with validation"""
+    headless: bool = False  # Must be False - Perplexity blocks headless browsers
+    args: List[str] = field(default_factory=lambda: ['--no-sandbox', '--disable-setuid-sandbox'])
 
-# Content stability detection
-STABILITY_CONFIG = {
-    'check_interval': 0.5,     # How often to check for stability (seconds)
-    'stable_threshold': 3,     # Number of consecutive stable checks required
-    'min_content_length': 50,  # Minimum content length for valid answer (characters)
-}
+    def __post_init__(self) -> None:
+        """Validate configuration"""
+        if self.headless:
+            raise ValueError('Headless mode not supported - Perplexity blocks headless browsers')
+        if not isinstance(self.args, list):
+            raise ValueError('Browser args must be a list')
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backward compatibility"""
+        return asdict(self)
+
+
+@dataclass
+class TypingSpeedConfig:
+    """Typing speed configuration for human-like behavior"""
+    char_min: float = 0.05  # Minimum delay between characters (seconds)
+    char_max: float = 0.15  # Maximum delay between characters (seconds)
+    space_min: float = 0.1  # Minimum delay for space characters (seconds)
+    space_max: float = 0.2  # Maximum delay for space characters (seconds)
+
+    def __post_init__(self) -> None:
+        """Validate typing speed ranges"""
+        if self.char_min < 0 or self.char_max < 0:
+            raise ValueError('Typing delays must be positive')
+        if self.char_min > self.char_max:
+            raise ValueError('char_min must be <= char_max')
+        if self.space_min > self.space_max:
+            raise ValueError('space_min must be <= space_max')
+
+
+@dataclass
+class DelayConfig:
+    """Configuration for human-like delay patterns.
+
+    Variance values control the spread of delay distributions:
+    - Exponential distribution: variance affects tail length (longer variance = more outliers)
+    - Gaussian distribution: variance is standard deviation
+
+    Values chosen based on human reaction time research:
+    - short (0.3): Quick reflexes, minimal variation
+    - medium (0.5): Normal reactions, moderate variation
+    - long (0.7): Deliberate actions, high variation
+    """
+    short_min: float = 0.3           # Short pause minimum (seconds)
+    short_max: float = 0.7           # Short pause maximum (seconds)
+    short_variance: float = 0.3      # Low variance for quick reactions
+
+    medium_min: float = 0.5          # Medium pause minimum (seconds)
+    medium_max: float = 1.5          # Medium pause maximum (seconds)
+    medium_variance: float = 0.5     # Moderate variance for normal actions
+
+    long_min: float = 1.0            # Long pause minimum (seconds)
+    long_max: float = 2.5            # Long pause maximum (seconds)
+    long_variance: float = 0.7       # High variance for deliberate actions
+
+    def __post_init__(self) -> None:
+        """Validate delay ranges"""
+        if any(d < 0 for d in [self.short_min, self.short_max, self.medium_min,
+                                self.medium_max, self.long_min, self.long_max]):
+            raise ValueError('Delays must be positive')
+        if any(v < 0 for v in [self.short_variance, self.medium_variance, self.long_variance]):
+            raise ValueError('Variance values must be positive')
+        if self.short_min > self.short_max:
+            raise ValueError('short_min must be <= short_max')
+        if self.medium_min > self.medium_max:
+            raise ValueError('medium_min must be <= medium_max')
+        if self.long_min > self.long_max:
+            raise ValueError('long_min must be <= long_max')
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backward compatibility."""
+        return {
+            'short_min': self.short_min,
+            'short_max': self.short_max,
+            'short_variance': self.short_variance,
+            'medium_min': self.medium_min,
+            'medium_max': self.medium_max,
+            'medium_variance': self.medium_variance,
+            'long_min': self.long_min,
+            'long_max': self.long_max,
+            'long_variance': self.long_variance,
+        }
+
+
+@dataclass
+class HumanBehaviorConfig:
+    """Human-like behavior settings"""
+    typing_speed: TypingSpeedConfig = field(default_factory=TypingSpeedConfig)
+    delays: DelayConfig = field(default_factory=DelayConfig)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backward compatibility"""
+        return {
+            'typing_speed': asdict(self.typing_speed),
+            'delays': asdict(self.delays),
+        }
+
+
+@dataclass
+class TimeoutConfig:
+    """Timeout configuration with validation"""
+    page_load: float = 10           # Page load timeout (seconds)
+    element_select: float = 5       # Default element selection timeout (seconds)
+    search_initiation: float = 10   # Wait for search to start (seconds)
+    content_stability: float = 30   # Wait for content to stabilize (seconds)
+    auth_verification: float = 5    # Authentication verification timeout (seconds)
+
+    def __post_init__(self) -> None:
+        """Validate timeouts are positive"""
+        if any(t <= 0 for t in [self.page_load, self.element_select, self.search_initiation,
+                                 self.content_stability, self.auth_verification]):
+            raise ValueError('All timeouts must be positive')
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backward compatibility"""
+        return asdict(self)
+
+
+@dataclass
+class StabilityConfig:
+    """Content stability detection configuration"""
+    check_interval: float = 0.5     # How often to check for stability (seconds)
+    stable_threshold: int = 3       # Number of consecutive stable checks required
+    min_content_length: int = 50    # Minimum content length for valid answer (characters)
+
+    def __post_init__(self) -> None:
+        """Validate stability configuration"""
+        if self.check_interval <= 0:
+            raise ValueError('check_interval must be positive')
+        if self.stable_threshold < 1:
+            raise ValueError('stable_threshold must be at least 1')
+        if self.min_content_length < 0:
+            raise ValueError('min_content_length must be non-negative')
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backward compatibility"""
+        return asdict(self)
+
+
+# Create instances for use throughout the application
+_browser_config = BrowserConfig()
+_human_behavior_config = HumanBehaviorConfig()
+_timeout_config = TimeoutConfig()
+_stability_config = StabilityConfig()
+
+# Backward compatibility: expose as dictionaries
+BROWSER_CONFIG = _browser_config.to_dict()
+HUMAN_BEHAVIOR = _human_behavior_config.to_dict()
+TIMEOUTS = _timeout_config.to_dict()
+STABILITY_CONFIG = _stability_config.to_dict()
 
 # Element selectors
 SELECTORS = {

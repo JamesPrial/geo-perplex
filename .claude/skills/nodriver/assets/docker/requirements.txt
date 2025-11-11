@@ -1,0 +1,27 @@
+# Core nodriver package
+nodriver>=0.36.0
+
+# Async support
+asyncio
+
+# Data handling
+pandas>=2.0.0
+openpyxl>=3.1.0  # For Excel export
+
+# Environment and configuration
+python-dotenv>=1.0.0
+
+# Logging
+colorlog>=6.7.0
+
+# Optional: Task queue support
+# celery>=5.3.0
+# redis>=5.0.0
+
+# Optional: Database support
+# sqlalchemy>=2.0.0
+# aiosqlite>=0.19.0
+
+# Optional: API support
+# fastapi>=0.104.0
+# uvicorn>=0.24.0
