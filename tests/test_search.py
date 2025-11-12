@@ -122,7 +122,7 @@ class TestDisplayResults:
         output = captured.out
 
         # Check for formatting elements
-        assert '═' * 10 in output  # Check for separator lines
+        assert '=' * 10 in output  # Check for separator lines (ASCII, not Unicode box-drawing)
         assert '---' in output     # Check for section dividers
 
     def test_display_results_sources_numbering(self, capsys):

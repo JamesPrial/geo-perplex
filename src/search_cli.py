@@ -10,7 +10,7 @@ import hashlib
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Any, Optional, Dict
 
 from src.utils.cookies import load_cookies, validate_auth_cookies
 from src.utils.storage import save_search_result
@@ -73,7 +73,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--save-json',
         action='store_true',
-        help='Save search result to JSON file in specified output directory'
+        help='Save search result to JSON file in specified output directory (includes iteration number for multi-query runs)'
     )
 
     parser.add_argument(
@@ -98,10 +98,125 @@ def parse_arguments() -> argparse.Namespace:
         '--query-count',
         type=int,
         default=1,
-        help='Number of queries to execute with --auto-new-chat (default: 1, use 2+ for multiple queries). NOTE: Values > 1 not yet implemented; use --multi-query for multiple queries'
+        help='Number of queries to execute with --auto-new-chat (default: 1, use 2+ for multiple queries with same search text)'
     )
 
     return parser.parse_args()
+
+
+async def execute_single_search_workflow(
+    page: Any,  # nodriver Tab - using Any since nodriver isn't typed
+    search_query: str,
+    model: Optional[str],
+    save_screenshot: bool,
+    screenshot_dir: Path,
+    args: argparse.Namespace,
+    iteration: int = 1
+) -> Dict[str, Any]:
+    """
+    Execute a single search workflow including search, extraction, and result saving.
+
+    Args:
+        page: Browser page object
+        search_query: Query text to search
+        model: AI model identifier (or None)
+        save_screenshot: Whether to save screenshot
+        screenshot_dir: Directory for screenshots
+        args: Command line arguments namespace
+        iteration: Query iteration number (for unique filenames)
+
+    Returns:
+        Dict with keys: success (bool), result_id (int|None), error (str|None), execution_time (float)
+    """
+    workflow_start_time = time.time()
+    success = True
+    error_message = None
+    result_id = None
+
+    try:
+        # Step 1: Perform search
+        logger.info('Performing search...')
+        await perform_search(page, search_query)
+
+        # Step 2: Wait for and extract results
+        logger.info('Waiting for search results...')
+
+        # Generate unique screenshot filename with iteration counter
+        screenshot_path = None
+        if save_screenshot:
+            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            query_hash = hashlib.md5(search_query.encode()).hexdigest()[:8]
+            screenshot_path = screenshot_dir / f'{timestamp_str}_{query_hash}_iter{iteration}.{SCREENSHOT_CONFIG["format"]}'
+
+        result = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
+
+        # Step 3: Display results
+        display_results(result)
+
+        # Update success status based on extraction result
+        success = result.success
+        if not result.success:
+            error_message = result.error
+            logger.warning(f'Extraction failed: {error_message}')
+
+        # Step 4: Save to database
+        execution_time = time.time() - workflow_start_time
+        logger.info('Saving results to database...')
+        result_id = save_search_result(
+            query=search_query,
+            answer_text=result.answer_text,
+            sources=result.sources,
+            screenshot_path=str(screenshot_path) if screenshot_path else None,
+            model=model,
+            execution_time=execution_time,
+            success=success,
+            error_message=error_message
+        )
+        logger.info(f'Saved as record ID: {result_id}')
+        logger.info(f'Execution time: {execution_time:.2f}s')
+        if result.strategy_used:
+            logger.info(f'Extraction strategy: {result.strategy_used}')
+        logger.info(f'Extraction time: {result.extraction_time:.2f}s')
+
+        # Save to JSON if requested
+        if args.save_json:
+            result_dict = {
+                "id": result_id,
+                "query": search_query,
+                "model": model,
+                "timestamp": datetime.now().isoformat(),
+                "answer_text": result.answer_text,
+                "sources": result.sources,
+                "screenshot_path": str(screenshot_path) if screenshot_path else None,
+                "execution_time_seconds": execution_time,
+                "success": success,
+                "error_message": error_message,
+                "iteration": iteration
+            }
+            try:
+                json_path = save_result_to_json(result_dict, output_dir=args.json_output_dir)
+                logger.info(f'Saved result to JSON: {json_path}')
+                print(f'\nResult exported to JSON: {json_path}')
+            except Exception as e:
+                logger.warning(f'Failed to save JSON: {e}')
+                print(f'\nWarning: Failed to save JSON: {e}', file=sys.stderr)
+
+        return {
+            'success': success,
+            'result_id': result_id,
+            'error': error_message,
+            'execution_time': execution_time
+        }
+
+    except Exception as e:
+        logger.error(f'Workflow error: {e}', exc_info=True)
+        execution_time = time.time() - workflow_start_time
+        return {
+            'success': False,
+            'result_id': None,
+            'error': str(e),
+            'execution_time': execution_time
+        }
 
 
 async def main():
@@ -188,101 +303,87 @@ async def main():
                 logger.error(f'Model selection failed: {e}')
                 raise
 
-        # Step 8: Perform search
-        logger.info('Performing search...')
-        await perform_search(page, search_query)
+        # Step 8: Prepare screenshot directory
+        screenshot_dir = Path(SCREENSHOT_CONFIG['directory'])
+        screenshot_dir.mkdir(exist_ok=True)
 
-        # Step 9: Wait for and extract results
-        logger.info('Waiting for search results...')
-
-        # Generate unique screenshot filename (only if screenshots are enabled)
-        screenshot_path = None
-        if save_screenshot:
-            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            query_hash = hashlib.md5(search_query.encode()).hexdigest()[:8]
-            screenshot_dir = Path(SCREENSHOT_CONFIG['directory'])
-            screenshot_dir.mkdir(exist_ok=True)
-            screenshot_path = screenshot_dir / f'{timestamp_str}_{query_hash}.{SCREENSHOT_CONFIG["format"]}'
-
-        result = await extract_search_results(page, str(screenshot_path) if screenshot_path else None)
-
-        # Step 10: Display results
-        display_results(result)
-
-        # Update success status based on extraction result
-        success = result.success
-        if not result.success:
-            error_message = result.error
-            logger.warning(f'Extraction failed: {error_message}')
-
-        # Step 11: Save to database
-        execution_time = time.time() - start_time
-        logger.info('Saving results to database...')
-        result_id = save_search_result(
-            query=search_query,
-            answer_text=result.answer_text,
-            sources=result.sources,
-            screenshot_path=str(screenshot_path) if screenshot_path else None,
+        # Step 9: Execute first search workflow
+        workflow_result = await execute_single_search_workflow(
+            page=page,
+            search_query=search_query,
             model=model,
-            execution_time=execution_time,
-            success=success,
-            error_message=error_message
+            save_screenshot=save_screenshot,
+            screenshot_dir=screenshot_dir,
+            args=args,
+            iteration=1
         )
-        logger.info(f'Saved as record ID: {result_id}')
-        logger.info(f'Execution time: {execution_time:.2f}s')
-        if result.strategy_used:
-            logger.info(f'Extraction strategy: {result.strategy_used}')
-        logger.info(f'Extraction time: {result.extraction_time:.2f}s')
 
-        # Save to JSON if requested
-        if save_json:
-            result_dict = {
-                "id": result_id,
-                "query": search_query,
-                "model": model,
-                "timestamp": datetime.now().isoformat(),
-                "answer_text": result.answer_text,
-                "sources": result.sources,
-                "screenshot_path": str(screenshot_path) if screenshot_path else None,
-                "execution_time_seconds": execution_time,
-                "success": success,
-                "error_message": error_message
-            }
-            try:
-                json_path = save_result_to_json(result_dict, output_dir=json_output_dir)
-                logger.info(f'Saved result to JSON: {json_path}')
-                print(f'\nResult exported to JSON: {json_path}')
-            except Exception as e:
-                logger.warning(f'Failed to save JSON: {e}')
-                print(f'\nWarning: Failed to save JSON: {e}', file=sys.stderr)
+        # Update success and error_message from workflow result
+        success = workflow_result['success']
+        error_message = workflow_result['error']
 
-        # Step 12: Handle new chat navigation if enabled
-        if args.auto_new_chat or args.multi_query:
-            if args.auto_new_chat and args.query_count > 1:
-                remaining_queries = args.query_count - 1
-                logger.info(f'Auto new chat enabled: {remaining_queries} more queries to execute')
+        # Step 10: Handle multi-query loop with auto-new-chat
+        if args.auto_new_chat and args.query_count > 1:
+            remaining_queries = args.query_count - 1
+            logger.info(f'Auto new chat enabled: {remaining_queries} more queries to execute')
 
-                for i in range(remaining_queries):
-                    logger.info(f'Starting query {i + 2}/{args.query_count}...')
+            loop_start_time = time.time()
 
-                    # Click new chat button
-                    try:
-                        success = await navigate_to_new_chat(page, verify=True)
-                        if not success:
-                            logger.error('Failed to navigate to new chat, stopping...')
-                            break
-                        logger.info('Successfully navigated to new chat')
-                    except Exception as e:
-                        logger.error(f'Navigation error: {e}')
+            for i in range(remaining_queries):
+                iteration_num = i + 2
+                logger.info(f'Starting query {iteration_num}/{args.query_count}...')
+
+                # Navigate to new chat
+                try:
+                    nav_success = await navigate_to_new_chat(page, verify=True)
+                    if not nav_success:
+                        # Navigation failure indicates browser/UI issue - stop all remaining queries
+                        logger.error(f'Failed to navigate to new chat for query {iteration_num}, stopping remaining queries...')
                         break
 
-                    # For now, just log that we're ready for next query
-                    # In future, could prompt user or read from file
-                    logger.warning(f'Query {i + 2}: Browser ready but no query provided (feature not yet implemented)')
-                    logger.warning('Use --multi-query instead for manual control')
+                    # Re-select model if specified (UI resets after new chat)
+                    if model:
+                        logger.info(f'Re-selecting model: {model} for query {iteration_num}')
+                        try:
+                            await select_model(page, model)  # type: ignore[arg-type]
+                        except Exception as e:
+                            logger.error(f'Model selection failed for query {iteration_num}: {e}')
+                            break
+
+                except Exception as e:
+                    # Critical navigation error - cannot continue
+                    logger.error(f'Navigation error for query {iteration_num}: {e}')
                     break
 
-            elif args.multi_query:
+                # Execute search workflow
+                try:
+                    workflow_result = await execute_single_search_workflow(
+                        page=page,
+                        search_query=search_query,
+                        model=model,  # Reuse selected model
+                        save_screenshot=save_screenshot,
+                        screenshot_dir=screenshot_dir,
+                        args=args,
+                        iteration=iteration_num
+                    )
+
+                    elapsed = time.time() - loop_start_time
+                    if workflow_result['success']:
+                        logger.info(f'Query {iteration_num}/{args.query_count} completed successfully ({elapsed:.1f}s total elapsed)')
+                    else:
+                        logger.warning(f'Query {iteration_num}/{args.query_count} failed: {workflow_result.get("error", "Unknown error")} ({elapsed:.1f}s total elapsed)')
+                        # Continue to next iteration even on failure
+
+                except Exception as e:
+                    # Workflow error - log and continue to next query
+                    # This allows collecting partial results even if individual queries fail
+                    logger.error(f'Error executing query {iteration_num}: {e}')
+                    # Continue to next iteration
+
+            total_elapsed = time.time() - loop_start_time
+            logger.info(f'Completed all {args.query_count} queries in {total_elapsed:.1f}s')
+
+        elif args.multi_query:
                 logger.info('Multi-query mode: Browser will remain open')
                 logger.info('You can manually click the new chat button and perform more searches')
                 logger.info('Press Ctrl+C when done')
@@ -324,37 +425,53 @@ async def main():
             logger.info('Browser closed')
 
 
-def display_results(result: ExtractionResult) -> None:
+def display_results(result) -> None:
     """
     Display search results in a formatted way
 
     Args:
-        result: ExtractionResult object with answer, sources, and metadata
+        result: ExtractionResult object OR dict with answer/sources keys (for backward compatibility)
     """
+    # Normalize input - handle both dict and ExtractionResult for backward compatibility
+    if isinstance(result, dict):
+        # Legacy dict format from tests
+        success = result.get('success', True)
+        answer_text = result.get('answer', result.get('answer_text', ''))
+        sources = result.get('sources', [])
+        strategy_used = result.get('strategy_used')
+        error = result.get('error')
+    else:
+        # ExtractionResult object
+        success = result.success
+        answer_text = result.answer_text
+        sources = result.sources
+        strategy_used = result.strategy_used
+        error = result.error
+
     print('\n' + '=' * 60)
-    print('SEARCH RESULTS')
+    print('📊 SEARCH RESULTS')
     print('=' * 60 + '\n')
 
     # Show extraction status
-    status_symbol = '✓' if result.success else '✗'
-    print(f'Status: {status_symbol} {"Success" if result.success else "Failed"}')
-    if result.strategy_used:
-        print(f'Strategy: {result.strategy_used}')
-    if result.error:
-        print(f'Error: {result.error}')
+    status_symbol = '✓' if success else '✗'
+    print(f'Status: {status_symbol} {"Success" if success else "Failed"}')
+    if strategy_used:
+        print(f'Strategy: {strategy_used}')
+    if error:
+        print(f'Error: {error}')
     print()
 
     # Show answer
     print('ANSWER:')
     print('-' * 60)
-    print(result.answer_text if result.answer_text else 'No answer available')
+    print(answer_text if answer_text else 'No answer available')
     print()
 
     # Show sources
-    if result.sources and len(result.sources) > 0:
+    if sources and len(sources) > 0:
         print('SOURCES:')
         print('-' * 60)
-        for index, source in enumerate(result.sources):
+        for index, source in enumerate(sources):
             if isinstance(source, dict):
                 print(f"{index + 1}. {source.get('text', 'N/A')}")
                 print(f"   {source.get('url', 'N/A')}")
