@@ -347,4 +347,5 @@ NEW_CHAT_CONFIG = {
         '[contenteditable="true"]',      # Empty search box indicator
         'textarea[placeholder*="Ask"]',  # Search textarea with "Ask" placeholder
     ],
+    'verification_poll_interval': 0.5,  # How often to poll for old content removal (seconds)
 }

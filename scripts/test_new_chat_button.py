@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import nodriver as uc
 from src.utils.cookies import load_cookies
 from src.browser.auth import set_cookies
-from src.browser.navigation import start_new_chat
+from src.browser.navigation import navigate_to_new_chat
 
 
 async def test_new_chat_button():
@@ -40,7 +40,7 @@ async def test_new_chat_button():
 
         # Click the new chat button
         print("\n4. Clicking new chat button...")
-        success = await start_new_chat(page)
+        success = await navigate_to_new_chat(page, verify=True)
 
         if success:
             print("✅ New chat button clicked successfully!")
@@ -95,7 +95,7 @@ async def test_multiple_new_chats():
 
         for i in range(1, num_clicks + 1):
             print(f"\n   Click {i}/{num_clicks}...")
-            success = await start_new_chat(page)
+            success = await navigate_to_new_chat(page, verify=True)
 
             if success:
                 print(f"   ✅ Click {i} successful")

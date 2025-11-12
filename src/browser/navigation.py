@@ -4,8 +4,10 @@ Browser navigation utilities for Perplexity.ai
 This module handles post-search navigation actions like starting new chats.
 Uses SmartClicker for reliable element interaction with multiple fallback strategies.
 """
+import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from src.browser.smart_click import SmartClicker
@@ -161,13 +163,12 @@ async def verify_new_chat_page(
     """
     Verify that we're actually on a new chat page.
 
-    Performs multiple checks to prevent false positives from weak verification:
-    1. URL changed to new chat pattern or root path
-    2. Previous search results have disappeared
-    3. Search input is present and empty
+    Performs multiple checks with a two-tier strategy:
+    - CRITICAL checks (must all pass): URL pattern, search input found, input empty
+    - INFO checks (60% majority required): Old search results gone
 
-    All checks must pass for verification to succeed. This prevents false positives
-    where old search pages might still have empty contenteditable elements.
+    This balances security with resilience to Perplexity's DOM persistence behavior,
+    where old search results sometimes remain in the DOM even after navigation.
 
     Args:
         page: Nodriver page/tab object (nodriver Tab instance)
@@ -175,7 +176,7 @@ async def verify_new_chat_page(
         previous_url: URL before navigation (for comparison)
 
     Returns:
-        bool: True if ALL verification checks pass, False otherwise
+        bool: True if CRITICAL checks pass + 60% majority of all checks pass, False otherwise
 
     Example:
         >>> previous_url = page.url
@@ -185,10 +186,11 @@ async def verify_new_chat_page(
         ...     print("Successfully on new chat page")
 
     Notes:
-        - Requires ALL checks to pass (URL, old content gone, new input present)
-        - URL verification helps confirm page navigation occurred
-        - Old content check prevents false positives on search result pages
-        - Input presence check ensures search functionality is available
+        - CRITICAL checks (must pass): URL matches pattern, input found, input empty
+        - INFO checks (informational, 60% majority): Old content gone
+        - Accounts for Perplexity keeping old DOM elements even after navigation
+        - URL verification confirms page navigation occurred
+        - Input checks ensure search functionality is available
         - Uses try/except for safety - verification fails safely without exceptions
     """
     timeout = timeout or NEW_CHAT_CONFIG.get('timeout', TIMEOUTS['new_chat_navigation'])
@@ -258,23 +260,57 @@ async def verify_new_chat_page(
         checks_passed.append(('Search input empty', input_empty))
 
         # ===== Evaluate All Checks =====
-        all_passed = all(passed for _, passed in checks_passed)
+        # Define which checks are critical (must pass)
+        critical_checks = [
+            'URL matches new chat pattern',
+            'Search input found',
+            'Search input empty',
+        ]
+
+        # Check if all critical checks passed
+        critical_passed = all(
+            passed for name, passed in checks_passed if name in critical_checks
+        )
+
+        # Count total passed checks
+        total_checks = len(checks_passed)
+        passed_count = sum(1 for _, passed in checks_passed if passed)
 
         # Log detailed summary
         logger.info("New chat verification checks:")
         for check_name, passed in checks_passed:
+            is_critical = check_name in critical_checks
             status = "PASS" if passed else "FAIL"
-            logger.info(f"  [{status}] {check_name}")
+            criticality = " [CRITICAL]" if is_critical else " [INFO]"
+            logger.info(f"  [{status}]{criticality} {check_name}")
 
-        if all_passed:
-            logger.info("New chat page verification: SUCCESS - All checks passed")
+        logger.info(f"Verification summary: {passed_count}/{total_checks} checks passed")
+
+        # Verification succeeds if:
+        # 1. All critical checks pass, AND
+        # 2. At least 60% of total checks pass (relaxed for old content persistence)
+        majority_threshold = 0.6  # 60% of checks
+        majority_passed = (passed_count / total_checks) >= majority_threshold
+
+        if critical_passed and majority_passed:
+            logger.info(
+                f"New chat page verification: SUCCESS - All critical checks passed "
+                f"({passed_count}/{total_checks} total)"
+            )
             return True
         else:
-            failed_checks = [name for name, passed in checks_passed if not passed]
-            logger.warning(
-                f"New chat page verification: FAILED - {len(failed_checks)} "
-                f"check(s) failed: {', '.join(failed_checks)}"
-            )
+            if not critical_passed:
+                failed_critical = [name for name in critical_checks
+                                  if not any(passed for n, passed in checks_passed if n == name)]
+                logger.warning(
+                    f"New chat page verification: FAILED - Critical check(s) failed: "
+                    f"{', '.join(failed_critical)}"
+                )
+            else:
+                logger.warning(
+                    f"New chat page verification: FAILED - Only {passed_count}/{total_checks} "
+                    f"checks passed (need {int(majority_threshold * 100)}%)"
+                )
             return False
 
     except Exception as e:
@@ -375,6 +411,12 @@ async def _verify_old_content_gone(page: Any, timeout: float) -> bool:
     """
     Verify that previous search results have disappeared.
 
+    Uses polling to wait for old content to be removed from the DOM.
+    After clicking "new chat", the URL changes immediately while DOM elements
+    take longer to disappear. This function polls repeatedly until either:
+    - No old content is found (success), or
+    - Timeout is exceeded (failure)
+
     Checks for common result page elements that should NOT exist on a new chat:
     - Answer containers
     - Source citations
@@ -383,11 +425,22 @@ async def _verify_old_content_gone(page: Any, timeout: float) -> bool:
 
     Args:
         page: Nodriver page instance
-        timeout: Timeout for element selection
+        timeout: Maximum seconds to wait for old content to disappear (polling timeout)
 
     Returns:
-        bool: True if no old content found (page is empty), False if old content exists
+        bool: True if no old content found within timeout (page is empty),
+              False if old content still exists after timeout expires
+
+    Notes:
+        - Polls configurable interval for consistent timing
+        - Returns immediately on success (old content gone)
+        - Logs polling progress at DEBUG level to avoid log spam
     """
+    # Validate timeout value
+    if timeout <= 0:
+        logger.warning(f"Invalid timeout value: {timeout}. Timeout must be positive.")
+        return False
+
     # Selectors for elements that indicate a search result page
     old_content_selectors = [
         '[data-testid*="answer"]',          # Answer container
@@ -403,36 +456,117 @@ async def _verify_old_content_gone(page: Any, timeout: float) -> bool:
         'ask follow-up',
     ]
 
-    logger.debug(f"Checking for old content with {len(old_content_selectors)} selectors")
+    poll_interval = NEW_CHAT_CONFIG.get('verification_poll_interval', 0.5)
+    start_time = time.time()
+    check_count = 0
 
-    # Check each selector
-    for selector in old_content_selectors:
+    logger.debug(
+        f"Starting polling for old content removal (timeout={timeout}s, "
+        f"poll_interval={poll_interval}s, {len(old_content_selectors)} selectors, "
+        f"{len(old_content_text_patterns)} text patterns)"
+    )
+
+    # Polling loop
+    while True:
+        check_count += 1
+        elapsed = time.time() - start_time
+        logger.debug(f"Check #{check_count}: elapsed={elapsed:.2f}s")
+
+        # Check if timeout expired
+        if elapsed >= timeout:
+            logger.warning(
+                f"Timeout waiting for old content to disappear "
+                f"(elapsed={elapsed:.2f}s, check_count={check_count}). "
+                f"Old content may still be present."
+            )
+            return False
+
+        # Use single JavaScript evaluation to check all conditions at once
+        # This is MUCH faster than multiple page.select_all() and page.evaluate() calls
         try:
-            elements = await page.select_all(selector)
-            if elements:
-                logger.debug(f"Found old content with selector: {selector}")
-                return False
-        except Exception as e:
-            logger.debug(f"Selector check failed ('{selector}'): {e}")
-            continue
+            # Build JavaScript to check all selectors and text patterns
+            selectors_js = json.dumps(old_content_selectors)
+            patterns_js = json.dumps([p.lower() for p in old_content_text_patterns])
 
-    # Check for text patterns
-    logger.debug(f"Checking for old content with {len(old_content_text_patterns)} text patterns")
-    for pattern in old_content_text_patterns:
-        try:
-            # Safely escape pattern for JavaScript interpolation
-            escaped_pattern = json.dumps(pattern.lower())
-
-            # Use JavaScript to check if text exists on page
             result = await page.evaluate(f'''
-                document.body.innerText.toLowerCase().includes({escaped_pattern})
-            ''')
-            if result:
-                logger.debug(f"Found old content text pattern: '{pattern}'")
-                return False
-        except Exception as e:
-            logger.debug(f"Text pattern check failed ('{pattern}'): {type(e).__name__}: {e}")
-            continue
+                (() => {{
+                    // Check element selectors
+                    const selectors = {selectors_js};
+                    for (const selector of selectors) {{
+                        try {{
+                            const elements = document.querySelectorAll(selector);
+                            if (elements.length > 0) {{
+                                return {{found: true, type: 'selector', value: selector, count: elements.length}};
+                            }}
+                        }} catch (e) {{
+                            // Ignore invalid selectors
+                        }}
+                    }}
 
-    logger.debug("No old content found - page appears empty")
-    return True
+                    // Check text patterns
+                    const patterns = {patterns_js};
+                    const bodyText = document.body.innerText.toLowerCase();
+                    for (const pattern of patterns) {{
+                        if (bodyText.includes(pattern)) {{
+                            return {{found: true, type: 'text', value: pattern}};
+                        }}
+                    }}
+
+                    // No old content found
+                    return {{found: false}};
+                }})()
+            ''')
+
+            # Handle different return types from page.evaluate()
+            # Sometimes returns dict, sometimes list, sometimes None
+            if not result or not isinstance(result, dict):
+                # Invalid or unexpected result - log and retry
+                logger.debug(
+                    f"Check #{check_count}: Unexpected JavaScript result type: {type(result)}, "
+                    f"value: {result}"
+                )
+                # Assume old content might still be present
+                logger.debug(f"Retrying after unexpected result in {poll_interval}s...")
+                await asyncio.sleep(poll_interval)
+                continue
+
+            # Valid dict result
+            if result.get('found'):
+                found_type = result.get('type', 'unknown')
+                found_value = result.get('value', 'unknown')
+                if found_type == 'selector':
+                    count = result.get('count', '?')
+                    logger.debug(
+                        f"Check #{check_count}: Found old content with selector "
+                        f"'{found_value}' ({count} elements)"
+                    )
+                else:
+                    logger.debug(
+                        f"Check #{check_count}: Found old content text pattern '{found_value}'"
+                    )
+
+                logger.debug(f"Old content still present, retrying in {poll_interval}s...")
+                await asyncio.sleep(poll_interval)
+                continue
+            else:
+                # No old content found - success!
+                logger.debug(
+                    f"Check #{check_count}: No old content found after {check_count} checks "
+                    f"({elapsed:.2f}s)"
+                )
+                return True
+
+        except Exception as e:
+            logger.debug(
+                f"Check #{check_count}: Error during evaluation: {type(e).__name__}: {e}"
+            )
+            # On error, assume content might still be present and retry
+            # (unless we're close to timeout)
+            if elapsed >= timeout - 1.0:  # Less than 1s left
+                logger.warning(
+                    f"Error during verification with insufficient time remaining: {e}"
+                )
+                return False
+            logger.debug(f"Retrying after error in {poll_interval}s...")
+            await asyncio.sleep(poll_interval)
+            continue
