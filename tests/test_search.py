@@ -7,7 +7,7 @@ import sys
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from src.search import display_results
+from src.search_cli import display_results
 
 
 @pytest.mark.unit
