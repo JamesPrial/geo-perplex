@@ -510,7 +510,22 @@ def display_results(result) -> None:
         print('-' * 60)
         for index, source in enumerate(sources):
             if isinstance(source, dict):
-                print(f"{index + 1}. {source.get('text', 'N/A')}")
+                # Get domain - either from new field or extract from URL
+                domain = source.get('domain', '')
+                if not domain and source.get('url'):
+                    from urllib.parse import urlparse
+                    try:
+                        domain = urlparse(source.get('url', '')).netloc
+                    except (ValueError, TypeError, AttributeError):
+                        domain = ''
+
+                # Get citation number (use original if available, otherwise use index+1)
+                citation_num = source.get('citation_number', index + 1)
+
+                # Format: "citation_number. Title [domain]"
+                text = source.get('text', 'N/A')
+                domain_str = f" [{domain}]" if domain else ""
+                print(f"{citation_num}. {text}{domain_str}")
                 print(f"   {source.get('url', 'N/A')}")
                 print()
 

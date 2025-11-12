@@ -9,11 +9,13 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 from src.config import (
     EXTRACTION_MARKERS,
     SELECTORS,
+    SOURCES_CONFIG,
     TIMEOUTS,
     SCREENSHOT_CONFIG,
     STABILITY_CONFIG
@@ -59,7 +61,7 @@ class ExtractionResult:
 def _validate_extraction(
     answer_text: str,
     sources: Optional[List[Dict[str, str]]]
-) -> tuple[bool, Optional[str]]:
+) -> Tuple[bool, Optional[str]]:
     """
     Validate extracted search results.
 
@@ -114,6 +116,298 @@ def _validate_extraction(
 
     # All checks passed
     return True, None
+
+
+def _extract_domain(url: str) -> str:
+    """
+    Extract domain from URL.
+
+    Args:
+        url: Full URL string
+
+    Returns:
+        Domain without 'www.' prefix (e.g., 'example.com')
+        Empty string if parsing fails
+
+    Example:
+        'https://www.example.com/path' -> 'example.com'
+    """
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc
+
+        # Remove 'www.' prefix if present
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        return domain
+    except Exception as e:
+        logger.debug(f'Error extracting domain from URL {url}: {e}')
+        return ''
+
+
+def _is_excluded_url(url: str, exclude_patterns: List[str]) -> bool:
+    """
+    Check if URL should be excluded based on patterns.
+
+    Args:
+        url: URL to check
+        exclude_patterns: List of patterns to exclude
+
+    Returns:
+        True if URL should be excluded, False otherwise
+    """
+    url_lower = url.lower()
+    for pattern in exclude_patterns:
+        if pattern.lower() in url_lower:
+            return True
+    return False
+
+
+async def _extract_sources(page: NodriverPage) -> List[Dict[str, str]]:
+    """
+    Extract sources from the page using multi-tier fallback strategy.
+
+    Implements a 3-tier extraction approach with rich metadata:
+    - Tier 1: Primary source elements (most reliable)
+    - Tier 2: Citation/footer links (fallback)
+    - Tier 3: Main content external links (last resort)
+
+    Each source includes:
+    - url: Full URL
+    - text: Link text (cleaned)
+    - domain: Extracted domain
+    - citation_number: Order in list
+    - title: Source title (may be same as text)
+    - snippet: Context/preview (optional, future enhancement)
+
+    Args:
+        page: Nodriver page object
+
+    Returns:
+        List of source dictionaries with rich metadata.
+        Returns empty list if extraction fails completely.
+    """
+    sources = []
+    seen_urls: Set[str] = set()
+    citation_number = 0
+    # Track sources found per tier for accurate reporting
+    tier_counts = {'Tier 1': 0, 'Tier 2': 0, 'Tier 3': 0}
+
+    # Get configuration with safe defaults
+    max_sources = max(1, int(SOURCES_CONFIG.get('max_sources', 20)))
+    min_text_length = SOURCES_CONFIG.get('min_text_length', 3)
+    deduplicate = SOURCES_CONFIG.get('deduplicate', True)
+    validate_external = SOURCES_CONFIG.get('validate_external_only', True)
+    exclude_patterns = SELECTORS['sources'].get('exclude_patterns', [])
+    tier_threshold = max(1, int(SOURCES_CONFIG.get('tier_fallback_threshold', 3)))
+
+    try:
+        # Tier 1: Primary source elements (most reliable)
+        tier1_selector = SELECTORS['sources']['tier1_primary']
+        logger.debug(f'Trying Tier 1: {tier1_selector}')
+
+        try:
+            tier1_elements = await page.select_all(tier1_selector)
+            logger.debug(f'Tier 1 found {len(tier1_elements)} potential sources')
+
+            for el in tier1_elements:
+                if len(sources) >= max_sources:
+                    break
+
+                try:
+                    # Extract URL
+                    href = el.attrs.get('href') if hasattr(el, 'attrs') else None
+                    if not href:
+                        continue
+
+                    # Validate external URL if required
+                    if validate_external and not href.startswith(('http://', 'https://')):
+                        logger.debug(f'Skipping non-external URL: {href}')
+                        continue
+
+                    # Check exclusion patterns
+                    if _is_excluded_url(href, exclude_patterns):
+                        logger.debug(f'Skipping excluded URL: {href}')
+                        continue
+
+                    # Deduplicate if enabled
+                    if deduplicate and href in seen_urls:
+                        logger.debug(f'Skipping duplicate URL: {href}')
+                        continue
+
+                    # Extract text (text_all is a property, not async)
+                    text = el.text_all if hasattr(el, 'text_all') else ''
+                    text = text.strip() if text else ''
+
+                    # Validate text length
+                    if len(text) < min_text_length:
+                        logger.debug(f'Skipping source with short text ({len(text)} chars): {href}')
+                        continue
+
+                    # Extract domain
+                    domain = _extract_domain(href)
+
+                    # Increment citation number
+                    citation_number += 1
+
+                    # Create source entry with rich metadata
+                    source = {
+                        'url': href,
+                        'text': text,
+                        'domain': domain,
+                        'citation_number': citation_number,
+                        'title': text,  # Title defaults to text for now
+                        'snippet': ''   # Snippet is optional, future enhancement
+                    }
+
+                    sources.append(source)
+                    seen_urls.add(href)
+                    logger.debug(f'Added source #{citation_number}: {domain} - {text[:50]}...')
+
+                except Exception as e:
+                    logger.debug(f'Error extracting individual source: {e}')
+                    continue
+
+        except Exception as e:
+            logger.debug(f'Tier 1 extraction failed: {e}')
+
+        # Track Tier 1 results
+        tier_counts['Tier 1'] = len(sources)
+        logger.debug(f'Tier 1 extracted {tier_counts["Tier 1"]} sources')
+
+        # Tier 2: Citations/footer links (if we need more sources)
+        if len(sources) < tier_threshold:
+            tier2_selector = SELECTORS['sources']['tier2_citations']
+            logger.debug(f'Tier 1 yielded {len(sources)} sources, trying Tier 2: {tier2_selector}')
+
+            try:
+                tier2_elements = await page.select_all(tier2_selector)
+                logger.debug(f'Tier 2 found {len(tier2_elements)} potential sources')
+
+                for el in tier2_elements:
+                    if len(sources) >= max_sources:
+                        break
+
+                    try:
+                        href = el.attrs.get('href') if hasattr(el, 'attrs') else None
+                        if not href:
+                            continue
+
+                        if validate_external and not href.startswith(('http://', 'https://')):
+                            continue
+
+                        if _is_excluded_url(href, exclude_patterns):
+                            continue
+
+                        if deduplicate and href in seen_urls:
+                            continue
+
+                        text = el.text_all if hasattr(el, 'text_all') else ''
+                        text = text.strip() if text else ''
+
+                        if len(text) < min_text_length:
+                            continue
+
+                        domain = _extract_domain(href)
+                        citation_number += 1
+
+                        source = {
+                            'url': href,
+                            'text': text,
+                            'domain': domain,
+                            'citation_number': citation_number,
+                            'title': text,
+                            'snippet': ''
+                        }
+
+                        sources.append(source)
+                        seen_urls.add(href)
+                        logger.debug(f'Added source #{citation_number} (Tier 2): {domain} - {text[:50]}...')
+
+                    except Exception as e:
+                        logger.debug(f'Error extracting Tier 2 source: {e}')
+                        continue
+
+            except Exception as e:
+                logger.debug(f'Tier 2 extraction failed: {e}')
+
+        # Track Tier 2 results
+        tier_counts['Tier 2'] = len(sources) - tier_counts['Tier 1']
+        logger.debug(f'Tier 2 extracted {tier_counts["Tier 2"]} additional sources (total: {len(sources)})')
+
+        # Tier 3: Main content links (last resort)
+        if len(sources) < tier_threshold:
+            tier3_selector = SELECTORS['sources']['tier3_references']
+            logger.debug(f'Tier 2 yielded {len(sources)} sources, trying Tier 3: {tier3_selector}')
+
+            try:
+                tier3_elements = await page.select_all(tier3_selector)
+                logger.debug(f'Tier 3 found {len(tier3_elements)} potential sources')
+
+                for el in tier3_elements:
+                    if len(sources) >= max_sources:
+                        break
+
+                    try:
+                        href = el.attrs.get('href') if hasattr(el, 'attrs') else None
+                        if not href:
+                            continue
+
+                        if validate_external and not href.startswith(('http://', 'https://')):
+                            continue
+
+                        if _is_excluded_url(href, exclude_patterns):
+                            continue
+
+                        if deduplicate and href in seen_urls:
+                            continue
+
+                        text = el.text_all if hasattr(el, 'text_all') else ''
+                        text = text.strip() if text else ''
+
+                        if len(text) < min_text_length:
+                            continue
+
+                        domain = _extract_domain(href)
+                        citation_number += 1
+
+                        source = {
+                            'url': href,
+                            'text': text,
+                            'domain': domain,
+                            'citation_number': citation_number,
+                            'title': text,
+                            'snippet': ''
+                        }
+
+                        sources.append(source)
+                        seen_urls.add(href)
+                        logger.debug(f'Added source #{citation_number} (Tier 3): {domain} - {text[:50]}...')
+
+                    except Exception as e:
+                        logger.debug(f'Error extracting Tier 3 source: {e}')
+                        continue
+
+            except Exception as e:
+                logger.debug(f'Tier 3 extraction failed: {e}')
+
+        # Track Tier 3 results
+        tier_counts['Tier 3'] = len(sources) - tier_counts['Tier 1'] - tier_counts['Tier 2']
+        logger.debug(f'Tier 3 extracted {tier_counts["Tier 3"]} additional sources (total: {len(sources)})')
+
+        # Log final results with detailed tier breakdown
+        if sources:
+            tier_breakdown = ', '.join([f'{tier}: {count}' for tier, count in tier_counts.items() if count > 0])
+            logger.info(f'Successfully extracted {len(sources)} sources ({tier_breakdown})')
+        else:
+            logger.warning('No sources found after trying all extraction tiers')
+
+        return sources
+
+    except Exception as e:
+        logger.error(f'Source extraction completely failed: {e}')
+        return []
 
 
 async def extract_search_results(page: NodriverPage, screenshot_path: Optional[str]) -> ExtractionResult:
@@ -305,30 +599,8 @@ async def extract_search_results(page: NodriverPage, screenshot_path: Optional[s
             except Exception as e:
                 logger.warning(f'Strategy 3 extraction error: {e}')
 
-        # Extract sources/citations
-        sources = []
-        try:
-            source_elements = await page.select_all(SELECTORS['sources'])
-            logger.debug(f'Found {len(source_elements)} potential source elements')
-
-            for el in source_elements[:10]:  # Limit to top 10 sources
-                try:
-                    href = el.attrs.get('href') if hasattr(el, 'attrs') else None
-                    # NOTE: .text_all is a PROPERTY, not an async method - do NOT await it
-                    text = el.text_all
-
-                    if href and text and len(text.strip()) > 3:
-                        sources.append({
-                            'url': href,
-                            'text': text.strip()
-                        })
-                except Exception as e:
-                    logger.debug(f'Error extracting source: {e}')
-                    continue
-
-            logger.info(f'Extracted {len(sources)} sources')
-        except Exception as e:
-            logger.warning(f'Could not extract sources: {e}')
+        # Extract sources/citations using multi-tier strategy
+        sources = await _extract_sources(page)
 
         # Validate extraction
         if not answer_text:

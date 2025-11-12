@@ -202,7 +202,18 @@ SELECTORS = {
         '[data-testid*="answer"]',
         'main [class*="response" i]',
     ],
-    'sources': '[data-testid*="source"] a, footer a[href*="http"]',
+    'sources': {
+        'tier1_primary': '[data-testid*="source"] a',
+        'tier2_citations': '[data-testid*="citation"] a, footer [class*="citation"] a',
+        'tier3_references': 'main article a[href^="http"], [class*="reference"] a',
+        'exclude_patterns': [
+            'perplexity.ai',      # Internal links
+            '/login',             # Auth links
+            '/upgrade',           # Marketing links
+            '/settings',          # Settings links
+            '/pricing'            # Pricing links
+        ]
+    },
 }
 
 # Text extraction markers
@@ -212,6 +223,18 @@ EXTRACTION_MARKERS = {
     'ui_elements': ['Home Discover', 'Spaces Finance', 'Upgrade Install', 'Answer Images'],
     'skip_patterns': ['Home', 'Discover', 'Spaces', 'Finance', 'Install',
                       'Upgrade', 'Account', 'Ask a follow-up', 'Thinking...'],
+}
+
+# Source extraction configuration
+# Controls how sources are extracted, validated, and deduplicated from search results
+SOURCES_CONFIG = {
+    'max_sources': 20,              # Increased from hard-coded 10
+    'min_text_length': 3,           # Minimum text length for valid source
+    'deduplicate': True,            # Remove duplicate URLs
+    'extract_domain': True,         # Add domain field to metadata
+    'extract_metadata': True,       # Extract additional metadata (title, snippet)
+    'validate_external_only': True, # Only include external sources (not perplexity.ai)
+    'tier_fallback_threshold': 3,   # Min sources before trying next tier
 }
 
 # Required cookies for authentication

@@ -70,10 +70,26 @@ def print_result(result: Dict, show_full_answer: bool = False) -> None:
     if sources and isinstance(sources, list):
         print(f"\nSources ({len(sources)}):")
         print("-" * 80)
-        for i, source in enumerate(sources[:5], 1):
+        for i, source in enumerate(sources, 1):
             if isinstance(source, dict):
-                print(f"{i}. {source.get('text', 'N/A')}")
+                # Get domain - either from new field or extract from URL
+                domain = source.get('domain', '')
+                if not domain and source.get('url'):
+                    from urllib.parse import urlparse
+                    try:
+                        domain = urlparse(source.get('url', '')).netloc
+                    except (ValueError, TypeError, AttributeError):
+                        domain = ''
+
+                # Get citation number (use original if available, otherwise use index)
+                citation_num = source.get('citation_number', i)
+
+                # Format: "citation_number. Title [domain]"
+                text = source.get('text', 'N/A')
+                domain_str = f" [{domain}]" if domain else ""
+                print(f"{citation_num}. {text}{domain_str}")
                 print(f"   {source.get('url', 'N/A')}")
+                print()  # Add blank line after each source for spacing
 
 
 def list_queries(args) -> None:
