@@ -21,6 +21,7 @@ from src.config import SCREENSHOT_CONFIG, LOGGING_CONFIG, MODEL_MAPPING
 from src.browser.manager import launch_browser
 from src.browser.auth import set_cookies, verify_authentication
 from src.browser.interactions import health_check, human_delay
+from src.browser.navigation import navigate_to_new_chat
 from src.search.executor import perform_search
 from src.search.extractor import extract_search_results, ExtractionResult
 from src.search.model_selector import select_model
@@ -81,6 +82,25 @@ def parse_arguments() -> argparse.Namespace:
         help='Directory for JSON exports (default: exports)'
     )
 
+    parser.add_argument(
+        '--multi-query',
+        action='store_true',
+        help='Keep browser open after search for multiple queries (requires manual new chat clicks)'
+    )
+
+    parser.add_argument(
+        '--auto-new-chat',
+        action='store_true',
+        help='Automatically click new chat button after each search (enables continuous querying)'
+    )
+
+    parser.add_argument(
+        '--query-count',
+        type=int,
+        default=1,
+        help='Number of queries to execute with --auto-new-chat (default: 1, use 2+ for multiple queries). NOTE: Values > 1 not yet implemented; use --multi-query for multiple queries'
+    )
+
     return parser.parse_args()
 
 
@@ -99,6 +119,15 @@ async def main():
         save_screenshot = not args.no_screenshot
         save_json = args.save_json
         json_output_dir = args.json_output_dir
+
+        # Validate flag combinations
+        if args.query_count > 1 and not args.auto_new_chat:
+            logger.error('--query-count requires --auto-new-chat flag')
+            logger.error('Use: python -m src.search_cli "query" --auto-new-chat --query-count N')
+            sys.exit(1)
+
+        if args.auto_new_chat and args.multi_query:
+            logger.warning('Both --auto-new-chat and --multi-query set; using --auto-new-chat mode')
 
         logger.info('=' * 60)
         logger.info('Perplexity.ai Search Automation')
@@ -226,6 +255,44 @@ async def main():
             except Exception as e:
                 logger.warning(f'Failed to save JSON: {e}')
                 print(f'\nWarning: Failed to save JSON: {e}', file=sys.stderr)
+
+        # Step 12: Handle new chat navigation if enabled
+        if args.auto_new_chat or args.multi_query:
+            if args.auto_new_chat and args.query_count > 1:
+                remaining_queries = args.query_count - 1
+                logger.info(f'Auto new chat enabled: {remaining_queries} more queries to execute')
+
+                for i in range(remaining_queries):
+                    logger.info(f'Starting query {i + 2}/{args.query_count}...')
+
+                    # Click new chat button
+                    try:
+                        success = await navigate_to_new_chat(page, verify=True)
+                        if not success:
+                            logger.error('Failed to navigate to new chat, stopping...')
+                            break
+                        logger.info('Successfully navigated to new chat')
+                    except Exception as e:
+                        logger.error(f'Navigation error: {e}')
+                        break
+
+                    # For now, just log that we're ready for next query
+                    # In future, could prompt user or read from file
+                    logger.warning(f'Query {i + 2}: Browser ready but no query provided (feature not yet implemented)')
+                    logger.warning('Use --multi-query instead for manual control')
+                    break
+
+            elif args.multi_query:
+                logger.info('Multi-query mode: Browser will remain open')
+                logger.info('You can manually click the new chat button and perform more searches')
+                logger.info('Press Ctrl+C when done')
+
+                # Keep browser alive until user interrupts
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info('User interrupted, closing browser...')
 
     except Exception as error:
         logger.error(f'Error: {str(error)}', exc_info=True)

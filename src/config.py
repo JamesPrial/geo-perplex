@@ -119,12 +119,13 @@ class TimeoutConfig:
     search_initiation: float = 10   # Wait for search to start (seconds)
     content_stability: float = 30   # Wait for content to stabilize (seconds)
     auth_verification: float = 5    # Authentication verification timeout (seconds)
+    new_chat_navigation: float = 10 # Wait for new chat page to load (seconds)
 
     def __post_init__(self) -> None:
         """Validate timeouts are positive"""
-        if any(t <= 0 for t in [self.page_load, self.element_select, self.search_initiation,
-                                 self.content_stability, self.auth_verification]):
-            raise ValueError('All timeouts must be positive')
+        for field_name, value in asdict(self).items():
+            if value <= 0:
+                raise ValueError(f'Timeout {field_name} must be positive, got {value}')
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for backward compatibility"""
@@ -327,4 +328,23 @@ MODEL_MAPPING = {
     'sonar-pro': ['Sonar Pro', 'Sonar-Pro'],
     'gemini': ['Gemini', 'gemini', 'Gemini Pro'],
     'default': ['Default', 'default'],
+}
+
+# New Chat Button Configuration
+# Discovered selectors for the "New Thread" button (+ icon in sidebar)
+# Used to navigate to a fresh chat page before starting a new search
+NEW_CHAT_CONFIG = {
+    'enabled': True,  # Global enable/disable for new chat navigation
+    'selectors': [
+        'button[data-testid="sidebar-new-thread"]',  # Primary selector with data-testid
+        'button[aria-label="New Thread"]',            # Accessible button by aria-label
+        '[data-testid="sidebar-new-thread"]',         # Fallback without button tag
+        '[aria-label="New Thread"]',                  # Generic fallback by aria-label
+    ],
+    'timeout': 5.0,  # Timeout for finding the new chat button (seconds)
+    'verify_navigation': True,  # Verify new chat page loaded successfully
+    'verification_selectors': [
+        '[contenteditable="true"]',      # Empty search box indicator
+        'textarea[placeholder*="Ask"]',  # Search textarea with "Ask" placeholder
+    ],
 }
