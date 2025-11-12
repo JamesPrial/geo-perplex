@@ -163,13 +163,13 @@ def test_validation_improvements():
         print(f"✗ Failed to reject short answer")
         return False
 
-    # Test 2: No sources
+    # Test 2: No sources (should still be valid - sources are optional)
     good_text = "This is a good answer with sufficient length for validation."
     is_valid, error = _validate_extraction(good_text, [])
-    if not is_valid and "No sources found" in error:
-        print(f"✓ Missing sources detected: {error}")
+    if is_valid and error is None:
+        print(f"✓ Valid answer without sources accepted (sources optional)")
     else:
-        print(f"✗ Failed to detect missing sources")
+        print(f"✗ Failed to accept answer without sources: {error}")
         return False
 
     # Test 3: Invalid source URLs
@@ -194,6 +194,14 @@ def test_validation_improvements():
         print(f"✓ Valid extraction passed")
     else:
         print(f"✗ Valid extraction rejected: {error}")
+        return False
+
+    # Test 5: None sources (edge case - should not crash)
+    is_valid, error = _validate_extraction(good_text, None)
+    if is_valid and error is None:
+        print(f"✓ Valid answer with None sources accepted (defensive None handling)")
+    else:
+        print(f"✗ Failed to accept answer with None sources: {error}")
         return False
 
     print("✓ All validation improvement tests passed")

@@ -58,7 +58,7 @@ class ExtractionResult:
 
 def _validate_extraction(
     answer_text: str,
-    sources: List[Dict[str, str]]
+    sources: Optional[List[Dict[str, str]]]
 ) -> tuple[bool, Optional[str]]:
     """
     Validate extracted search results.
@@ -68,7 +68,7 @@ def _validate_extraction(
 
     Args:
         answer_text: Extracted answer text
-        sources: List of source dictionaries with 'url' and 'text' keys
+        sources: Optional list of source dictionaries with 'url' and 'text' keys (None is acceptable)
 
     Returns:
         Tuple of (is_valid, error_message)
@@ -94,21 +94,23 @@ def _validate_extraction(
                 f"'{match.group()}' matched pattern {pattern.pattern}"
             )
 
-    # Validate sources structure
-    if not sources:
-        return False, "No sources found"
+    # Validate sources structure (if sources exist)
+    # Sources are optional - extraction is valid even without them
+    if sources is not None and len(sources) > 0:
+        # Check that sources have valid URLs
+        valid_sources = 0
+        for source in sources:
+            if isinstance(source, dict) and source.get('url'):
+                url = source['url']
+                # Basic URL validation
+                if url.startswith(('http://', 'https://')):
+                    valid_sources += 1
 
-    # Check that sources have valid URLs
-    valid_sources = 0
-    for source in sources:
-        if isinstance(source, dict) and source.get('url'):
-            url = source['url']
-            # Basic URL validation
-            if url.startswith(('http://', 'https://')):
-                valid_sources += 1
-
-    if valid_sources == 0:
-        return False, f"No valid source URLs found (got {len(sources)} sources)"
+        if valid_sources == 0:
+            return False, f"No valid source URLs found (got {len(sources)} sources)"
+    else:
+        # No sources found but answer text is valid - this is acceptable
+        logger.debug("No sources found, but answer text is valid - proceeding with extraction")
 
     # All checks passed
     return True, None
