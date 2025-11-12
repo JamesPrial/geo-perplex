@@ -4,6 +4,7 @@ Browser navigation utilities for Perplexity.ai
 This module handles post-search navigation actions like starting new chats.
 Uses SmartClicker for reliable element interaction with multiple fallback strategies.
 """
+import json
 import logging
 from typing import Any, Optional
 
@@ -14,7 +15,7 @@ from src.config import NEW_CHAT_CONFIG, TIMEOUTS
 logger = logging.getLogger(__name__)
 
 
-async def navigate_to_new_chat(page: Any, verify: bool = True) -> bool:
+async def navigate_to_new_chat(page: Any, verify: bool = True, previous_url: Optional[str] = None) -> bool:
     """
     Navigate to a new chat by clicking the new chat button.
 
@@ -25,6 +26,8 @@ async def navigate_to_new_chat(page: Any, verify: bool = True) -> bool:
     Args:
         page: Nodriver page/tab object (nodriver Tab instance)
         verify: Whether to verify navigation succeeded (default: True)
+        previous_url: Previous page URL for independent verification (optional)
+                     If provided, will check that page.url changed after navigation
 
     Returns:
         bool: True if navigation succeeded (and verified if requested), False otherwise
@@ -44,8 +47,11 @@ async def navigate_to_new_chat(page: Any, verify: bool = True) -> bool:
         - Uses SmartClicker with 6 fallback click strategies
         - Optional verification checks for empty search input
         - Returns False on verification failure (not an exception)
+        - If previous_url provided, logs URL change for debugging
     """
     logger.info("Navigating to new chat...")
+    if previous_url:
+        logger.debug(f"Previous URL stored for verification: {previous_url}")
 
     try:
         # Get selectors from config
@@ -124,7 +130,10 @@ async def navigate_to_new_chat(page: Any, verify: bool = True) -> bool:
         # Verify navigation succeeded if requested
         if verify:
             logger.debug("Verifying new chat page loaded...")
-            verification_passed = await verify_new_chat_page(page)
+            verification_passed = await verify_new_chat_page(
+                page,
+                previous_url=previous_url
+            )
 
             if verification_passed:
                 logger.info("New chat navigation verified successfully")
@@ -144,77 +153,134 @@ async def navigate_to_new_chat(page: Any, verify: bool = True) -> bool:
         return False
 
 
-async def verify_new_chat_page(page: Any) -> bool:
+async def verify_new_chat_page(
+    page: Any,
+    timeout: float = None,
+    previous_url: str = None
+) -> bool:
     """
-    Verify that the new chat page loaded correctly.
+    Verify that we're actually on a new chat page.
 
-    Checks for empty search input using verification selectors from config.
-    This confirms that navigation to a fresh chat succeeded.
+    Performs multiple checks to prevent false positives from weak verification:
+    1. URL changed to new chat pattern or root path
+    2. Previous search results have disappeared
+    3. Search input is present and empty
+
+    All checks must pass for verification to succeed. This prevents false positives
+    where old search pages might still have empty contenteditable elements.
 
     Args:
         page: Nodriver page/tab object (nodriver Tab instance)
+        timeout: Max seconds to wait (default from config)
+        previous_url: URL before navigation (for comparison)
 
     Returns:
-        bool: True if new chat page verified, False otherwise
+        bool: True if ALL verification checks pass, False otherwise
 
     Example:
-        >>> success = await verify_new_chat_page(page)
+        >>> previous_url = page.url
+        >>> # ... navigate to new chat ...
+        >>> success = await verify_new_chat_page(page, previous_url=previous_url)
         >>> if success:
-        ...     print("On new chat page")
+        ...     print("Successfully on new chat page")
 
     Notes:
-        - Checks multiple verification selectors from NEW_CHAT_CONFIG
-        - Verifies input is actually empty (no text content)
-        - Handles both .get_attribute('value') and .text_all properties
-        - Uses try/except for safety (no exceptions raised)
-        - Returns True if ANY verification selector confirms empty input
+        - Requires ALL checks to pass (URL, old content gone, new input present)
+        - URL verification helps confirm page navigation occurred
+        - Old content check prevents false positives on search result pages
+        - Input presence check ensures search functionality is available
+        - Uses try/except for safety - verification fails safely without exceptions
     """
+    timeout = timeout or NEW_CHAT_CONFIG.get('timeout', TIMEOUTS['new_chat_navigation'])
+    logger.info("Verifying new chat page (multi-check verification)...")
+
+    checks_passed = []
+
     try:
-        # Get verification selectors from config
+        # ===== Check 1: URL Verification =====
+        current_url = page.url
+        logger.debug(f"Current URL: {current_url}")
+
+        # Check if URL changed from previous
+        if previous_url:
+            url_changed = current_url != previous_url
+            checks_passed.append(('URL changed', url_changed))
+            logger.debug(f"URL changed from '{previous_url}': {url_changed}")
+        else:
+            logger.debug("Previous URL not provided, skipping URL change check")
+
+        # Check if URL matches new chat pattern
+        is_new_chat_url = _is_new_chat_url(current_url)
+        checks_passed.append(('URL matches new chat pattern', is_new_chat_url))
+        logger.debug(f"URL matches new chat pattern: {is_new_chat_url}")
+
+        # ===== Check 2: Previous Content Gone =====
+        old_content_gone = await _verify_old_content_gone(page, timeout)
+        checks_passed.append(('Old search results gone', old_content_gone))
+        logger.debug(f"Old content verification: {old_content_gone}")
+
+        # ===== Check 3: Search Input Present and Empty =====
+        input_found = False
+        input_empty = False
+
         verification_selectors = NEW_CHAT_CONFIG.get('verification_selectors', [
             '[contenteditable="true"]',
             'textarea[placeholder*="Ask"]',
         ])
 
         logger.debug(
-            f"Verifying new chat page with {len(verification_selectors)} selectors"
+            f"Checking for search input with {len(verification_selectors)} selectors"
         )
 
-        # Try each verification selector
         for selector in verification_selectors:
             try:
                 element = await find_interactive_element(
                     page,
                     [selector],
-                    timeout=NEW_CHAT_CONFIG.get('timeout', 3.0)
+                    timeout=timeout
                 )
 
                 if element:
-                    logger.debug(f"Found verification element: {selector}")
-
-                    # Check if input is empty
+                    input_found = True
                     input_value = await _get_input_value(element)
+                    input_empty = not input_value or not input_value.strip()
 
-                    if input_value == "" or input_value is None:
-                        logger.debug(
-                            f"Verification passed: {selector} is empty"
-                        )
-                        return True
-                    else:
-                        logger.debug(
-                            f"Verification check: {selector} has content: "
-                            f"'{input_value[:50]}...'"
-                        )
+                    logger.debug(
+                        f"Search input found (selector: {selector}), "
+                        f"empty: {input_empty}"
+                    )
+                    break
             except Exception as e:
-                logger.debug(f"Verification selector '{selector}' failed: {e}")
+                logger.debug(f"Selector '{selector}' failed: {e}")
                 continue
 
-        # None of the verification selectors confirmed empty input
-        logger.warning("Could not verify new chat page - no empty input found")
-        return False
+        checks_passed.append(('Search input found', input_found))
+        checks_passed.append(('Search input empty', input_empty))
+
+        # ===== Evaluate All Checks =====
+        all_passed = all(passed for _, passed in checks_passed)
+
+        # Log detailed summary
+        logger.info("New chat verification checks:")
+        for check_name, passed in checks_passed:
+            status = "PASS" if passed else "FAIL"
+            logger.info(f"  [{status}] {check_name}")
+
+        if all_passed:
+            logger.info("New chat page verification: SUCCESS - All checks passed")
+            return True
+        else:
+            failed_checks = [name for name, passed in checks_passed if not passed]
+            logger.warning(
+                f"New chat page verification: FAILED - {len(failed_checks)} "
+                f"check(s) failed: {', '.join(failed_checks)}"
+            )
+            return False
 
     except Exception as e:
-        logger.warning(f"Error during new chat verification: {type(e).__name__}: {e}")
+        logger.error(
+            f"Error during new chat verification: {type(e).__name__}: {e}"
+        )
         return False
 
 
@@ -268,3 +334,105 @@ async def _get_input_value(element) -> Optional[str]:
         logger.debug(f"Could not get 'text' property: {e}")
 
     return None
+
+
+def _is_new_chat_url(url: str) -> bool:
+    """
+    Check if URL matches new chat page pattern.
+
+    New chat pages have URLs like:
+    - https://www.perplexity.ai/ (root)
+    - https://www.perplexity.ai/search/[thread-id]
+    - https://www.perplexity.ai
+
+    Args:
+        url: Current page URL
+
+    Returns:
+        bool: True if URL matches new chat pattern
+    """
+    if not url:
+        return False
+
+    # Remove protocol and trailing slashes for comparison
+    url_clean = url.replace('https://', '').replace('http://', '').rstrip('/')
+
+    # Check for root path
+    if url_clean == 'www.perplexity.ai' or url_clean == 'perplexity.ai':
+        logger.debug("URL is root path (new chat)")
+        return True
+
+    # Check for /search/ path (new search thread)
+    if '/search/' in url:
+        logger.debug("URL contains /search/ path (new search thread)")
+        return True
+
+    logger.debug(f"URL does not match new chat pattern: {url}")
+    return False
+
+
+async def _verify_old_content_gone(page: Any, timeout: float) -> bool:
+    """
+    Verify that previous search results have disappeared.
+
+    Checks for common result page elements that should NOT exist on a new chat:
+    - Answer containers
+    - Source citations
+    - "ask a follow-up" UI elements
+    - Previous response containers
+
+    Args:
+        page: Nodriver page instance
+        timeout: Timeout for element selection
+
+    Returns:
+        bool: True if no old content found (page is empty), False if old content exists
+    """
+    # Selectors for elements that indicate a search result page
+    old_content_selectors = [
+        '[data-testid*="answer"]',          # Answer container
+        '[data-testid*="source"]',          # Source citations
+        '[class*="answer"]',                # CSS class-based answer
+        '[class*="response"]',              # Response container
+        'main [class*="text-base"]',        # Response text (Perplexity specific)
+    ]
+
+    # Text patterns that indicate a search result page
+    old_content_text_patterns = [
+        'ask a follow-up',
+        'ask follow-up',
+    ]
+
+    logger.debug(f"Checking for old content with {len(old_content_selectors)} selectors")
+
+    # Check each selector
+    for selector in old_content_selectors:
+        try:
+            elements = await page.select_all(selector)
+            if elements:
+                logger.debug(f"Found old content with selector: {selector}")
+                return False
+        except Exception as e:
+            logger.debug(f"Selector check failed ('{selector}'): {e}")
+            continue
+
+    # Check for text patterns
+    logger.debug(f"Checking for old content with {len(old_content_text_patterns)} text patterns")
+    for pattern in old_content_text_patterns:
+        try:
+            # Safely escape pattern for JavaScript interpolation
+            escaped_pattern = json.dumps(pattern.lower())
+
+            # Use JavaScript to check if text exists on page
+            result = await page.evaluate(f'''
+                document.body.innerText.toLowerCase().includes({escaped_pattern})
+            ''')
+            if result:
+                logger.debug(f"Found old content text pattern: '{pattern}'")
+                return False
+        except Exception as e:
+            logger.debug(f"Text pattern check failed ('{pattern}'): {type(e).__name__}: {e}")
+            continue
+
+    logger.debug("No old content found - page appears empty")
+    return True

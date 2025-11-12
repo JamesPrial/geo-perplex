@@ -99,7 +99,9 @@ async def select_model(page: NodriverPage, model_name: str) -> bool:
                 f"Available options: {available}"
             )
 
-        logger.debug(f"Found model option: {model_option.text}")
+        # Safe property access using text_all for reliable element text retrieval
+        option_text = model_option.text_all if hasattr(model_option, 'text_all') else 'N/A'
+        logger.debug(f"Found model option: {option_text}")
 
         # Step 7: Click the model option
         await human_delay('short')

@@ -9,6 +9,7 @@ This module handles:
 import asyncio
 import hashlib
 import logging
+from time import time
 from typing import Optional
 import nodriver as uc
 
@@ -18,6 +19,10 @@ from src.browser.smart_click import SmartClicker, ClickStrategy
 from src.types import NodriverPage
 
 logger = logging.getLogger(__name__)
+
+# Constants for search verification
+# Quick element check timeout - fail fast if element not immediately visible
+VERIFICATION_ELEMENT_TIMEOUT = 0.5
 
 
 async def perform_search(page: NodriverPage, query: str) -> None:
@@ -62,17 +67,40 @@ async def perform_search(page: NodriverPage, query: str) -> None:
 
         await human_delay('short')
 
-        # Type the query character-by-character (most realistic) with verification
-        logger.info(f'Typing query: "{query}"')
-        typing_success = await type_like_human(search_input, query, verify=True)
+        # Detect if element is contenteditable (verification unreliable for these)
+        is_contenteditable = False
+        try:
+            contenteditable_attr = await search_input.get_attribute('contenteditable')
+            is_contenteditable = contenteditable_attr is not None and contenteditable_attr == 'true'
+            if is_contenteditable:
+                logger.info("Search input is contenteditable, skipping typing verification (unreliable)")
+        except Exception:
+            pass
 
-        if not typing_success:
-            logger.warning('Typing verification failed, but continuing...')
+        # Type the query character-by-character (most realistic) with conditional verification
+        logger.info(f'Typing query: "{query}"')
+        typing_success = await type_like_human(
+            search_input,
+            query,
+            page=page,  # Pass page for contenteditable support
+            verify=not is_contenteditable  # Skip verification for contenteditable
+        )
+
+        if not typing_success and not is_contenteditable:
+            # Only treat as error if verification was enabled and failed
+            logger.error('Typing verification failed for standard input element')
+            raise RuntimeError('Failed to type search query')
+        elif not typing_success and is_contenteditable:
+            logger.warning('Typing verification inconclusive for contenteditable element, continuing...')
 
         logger.info('Query entered')
 
         # Human delay before submitting
         await human_delay('short')
+
+        # Capture URL before submission for verification
+        original_url = page.url
+        logger.debug(f'URL before submission: {original_url}')
 
         # Submit the search using triple fallback approach
         # Method 1: Send newline character
@@ -130,10 +158,106 @@ async def perform_search(page: NodriverPage, query: str) -> None:
         except Exception as e:
             logger.debug(f'Search button fallback not needed: {e}')
 
-        logger.info('Search submitted')
+        # Verify that search actually submitted
+        logger.info('Verifying search submission...')
+        submission_verified = await verify_search_submitted(
+            page,
+            original_url=original_url,
+            timeout=5.0
+        )
+
+        if not submission_verified:
+            logger.error('Search submission could not be verified - no loading indicators or URL change detected')
+            raise RuntimeError('Search submission verification failed')
+
+        logger.info('Search submitted and verified successfully')
 
     except Exception as error:
         raise Exception(f'Failed to perform search: {str(error)}')
+
+
+async def verify_search_submitted(
+    page: NodriverPage,
+    original_url: str,
+    timeout: float = 5.0
+) -> bool:
+    """
+    Verify that search submission actually started.
+
+    Checks multiple indicators that search is executing:
+    1. URL changed (query parameters added)
+    2. Loading indicators present
+    3. Result generation UI visible
+
+    Uses module-level VERIFICATION_ELEMENT_TIMEOUT for quick element checks.
+
+    Args:
+        page: Nodriver page instance
+        original_url: URL before search submission
+        timeout: Max seconds to wait for indicators
+
+    Returns:
+        True if search submission verified
+    """
+    logger.debug("Verifying search submission...")
+    start_time = time()
+
+    indicators_found = []
+
+    while time() - start_time < timeout:
+        # Check 1: URL changed
+        current_url = page.url
+        if current_url != original_url:
+            logger.debug(f"URL changed: {original_url} → {current_url}")
+            indicators_found.append('URL changed')
+
+        # Check 2: Loading indicators
+        loading_selectors = [
+            '[data-testid*="loading"]',
+            '[class*="loading"]',
+            '[class*="spinner"]',
+            'text:Searching',
+            'text:Thinking',
+        ]
+
+        for selector in loading_selectors:
+            try:
+                element = await page.find(selector, timeout=VERIFICATION_ELEMENT_TIMEOUT)
+                if element:
+                    logger.debug(f"Found loading indicator: {selector}")
+                    indicators_found.append(f'Loading indicator ({selector})')
+                    break
+            except Exception:
+                continue
+
+        # Check 3: Result generation UI
+        result_selectors = [
+            '[data-testid*="answer"]',
+            '[data-testid*="result"]',
+            '[class*="answer"]',
+            'text:1 step',
+            'text:completed',
+        ]
+
+        for selector in result_selectors:
+            try:
+                element = await page.find(selector, timeout=VERIFICATION_ELEMENT_TIMEOUT)
+                if element:
+                    logger.debug(f"Found result generation UI: {selector}")
+                    indicators_found.append(f'Result UI ({selector})')
+                    break
+            except Exception:
+                continue
+
+        # If we found any indicators, search has started
+        if indicators_found:
+            logger.info(f"Search submission verified: {', '.join(indicators_found)}")
+            return True
+
+        await asyncio.sleep(0.3)
+
+    logger.warning(f"Search submission verification timed out after {timeout}s - no indicators found")
+    return False
 
 
 async def wait_for_content_stability(page: NodriverPage, max_wait: Optional[int] = None) -> bool:

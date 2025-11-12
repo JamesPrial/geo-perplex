@@ -325,37 +325,75 @@ async def main():
         # Step 10: Handle multi-query loop with auto-new-chat
         if args.auto_new_chat and args.query_count > 1:
             remaining_queries = args.query_count - 1
-            logger.info(f'Auto new chat enabled: {remaining_queries} more queries to execute')
+            logger.info(f'\n{"="*60}')
+            logger.info(f'AUTO-NEW-CHAT: Executing {remaining_queries} additional queries')
+            logger.info(f'{"="*60}\n')
 
             loop_start_time = time.time()
 
             for i in range(remaining_queries):
                 iteration_num = i + 2
-                logger.info(f'Starting query {iteration_num}/{args.query_count}...')
+                logger.info(f'\n{"="*60}')
+                logger.info(f'--- Starting Query {iteration_num}/{args.query_count} ---')
+                logger.info(f'{"="*60}\n')
+
+                # Store current URL for independent verification
+                previous_url = page.url
+                logger.debug(f"Current URL before navigation: {previous_url}")
 
                 # Navigate to new chat
                 try:
-                    nav_success = await navigate_to_new_chat(page, verify=True)
+                    nav_success = await navigate_to_new_chat(
+                        page,
+                        verify=True,
+                        previous_url=previous_url  # Pass for enhanced verification
+                    )
+
                     if not nav_success:
                         # Navigation failure indicates browser/UI issue - stop all remaining queries
-                        logger.error(f'Failed to navigate to new chat for query {iteration_num}, stopping remaining queries...')
+                        logger.error(f'Failed to navigate to new chat for query {iteration_num}')
+                        logger.error('Navigation verification returned False')
+                        logger.error('Stopping multi-query execution')
                         break
 
-                    # Re-select model if specified (UI resets after new chat)
-                    if model:
-                        logger.info(f'Re-selecting model: {model} for query {iteration_num}')
-                        try:
-                            await select_model(page, model)  # type: ignore[arg-type]
-                        except Exception as e:
-                            logger.error(f'Model selection failed for query {iteration_num}: {e}')
-                            break
+                    # INDEPENDENT VERIFICATION: Check URL actually changed
+                    current_url = page.url
+                    logger.debug(f"Current URL after navigation: {current_url}")
+
+                    if current_url == previous_url:
+                        logger.error(f'Navigation claimed success but URL did not change!')
+                        logger.error(f'  Previous URL: {previous_url}')
+                        logger.error(f'  Current URL:  {current_url}')
+                        logger.error(f'This indicates navigation verification gave false positive')
+                        logger.error('Stopping multi-query execution to prevent duplicate searches on same page')
+                        break
+
+                    logger.info(f'URL changed to new chat page')
+                    logger.debug(f'  New URL: {current_url}')
 
                 except Exception as e:
                     # Critical navigation error - cannot continue
                     logger.error(f'Navigation error for query {iteration_num}: {e}')
+                    logger.error('Stopping multi-query execution')
                     break
 
+                # Re-select model if specified (UI resets after new chat)
+                if model:
+                    logger.info(f'Re-selecting model: {model}')
+                    try:
+                        # type: ignore[arg-type] - page is Any type from nodriver, select_model expects NodriverPage protocol
+                        await select_model(page, model)
+                        logger.info(f'Model {model} selected for query {iteration_num}')
+                    except Exception as e:
+                        logger.error(f'Failed to select model {model}: {e}')
+                        logger.error('Stopping multi-query execution')
+                        break
+
+                # Small delay before next search
+                await human_delay('short')
+
                 # Execute search workflow
+                logger.info(f'Executing search workflow for query {iteration_num}...')
                 try:
                     workflow_result = await execute_single_search_workflow(
                         page=page,
@@ -371,17 +409,16 @@ async def main():
                     if workflow_result['success']:
                         logger.info(f'Query {iteration_num}/{args.query_count} completed successfully ({elapsed:.1f}s total elapsed)')
                     else:
-                        logger.warning(f'Query {iteration_num}/{args.query_count} failed: {workflow_result.get("error", "Unknown error")} ({elapsed:.1f}s total elapsed)')
-                        # Continue to next iteration even on failure
+                        logger.warning(f'Query {iteration_num}/{args.query_count} completed with issues: {workflow_result.get("error", "Unknown error")} ({elapsed:.1f}s total elapsed)')
 
                 except Exception as e:
                     # Workflow error - log and continue to next query
                     # This allows collecting partial results even if individual queries fail
-                    logger.error(f'Error executing query {iteration_num}: {e}')
-                    # Continue to next iteration
+                    logger.error(f'Query {iteration_num}/{args.query_count} failed with error: {e}')
+                    # Continue to next iteration to attempt remaining queries
 
             total_elapsed = time.time() - loop_start_time
-            logger.info(f'Completed all {args.query_count} queries in {total_elapsed:.1f}s')
+            logger.info(f'\nCompleted all {args.query_count} queries in {total_elapsed:.1f}s')
 
         elif args.multi_query:
                 logger.info('Multi-query mode: Browser will remain open')

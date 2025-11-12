@@ -2,6 +2,7 @@
 Browser interaction utilities for human-like behavior and element handling
 """
 import asyncio
+import json
 import random
 import logging
 from typing import List, Dict, Any, Optional
@@ -65,36 +66,118 @@ async def human_delay(delay_type: str = 'short', distribution: str = 'exponentia
     await asyncio.sleep(delay)
 
 
-async def _get_element_value(element) -> str:
+async def _get_element_value(element, page: NodriverPage = None) -> str:
     """
-    Safely get element value or text content.
+    Safely get element value or text content with contenteditable support.
+
+    Tries multiple strategies to extract text:
+    1. .value attribute (standard form inputs)
+    2. .text_all property (Nodriver element text)
+    3. .text property (direct element text)
+    4. JavaScript innerText (contenteditable divs)
+    5. JavaScript textContent (fallback)
 
     Args:
         element: Nodriver element
+        page: Nodriver page object (required for JavaScript fallbacks)
 
     Returns:
         Element value or text content as string
     """
+    # Strategy 1: Try value attribute first (for input/textarea)
     try:
-        # Try value attribute first (for input/textarea)
         value = element.get_attribute('value')
         # Check if it's awaitable (depends on nodriver version)
         if hasattr(value, '__await__'):
             value = await value
-        if value is not None:
+        if value is not None and str(value).strip():
+            logger.debug("Extracted value using .value attribute")
             return str(value)
-    except (AttributeError, TypeError):
-        pass
+    except AttributeError:
+        logger.debug("Element doesn't have .value attribute (not a form input)")
+    except (TypeError, Exception) as e:
+        logger.debug(f"Failed to get .value attribute: {type(e).__name__}: {e}")
 
-    # Fallback to text content
+    # Strategy 2: Try .text_all property (works for most elements)
     try:
         if hasattr(element, 'text_all'):
-            return element.text_all or ""
-        elif hasattr(element, 'text'):
-            return element.text or ""
-    except (AttributeError, TypeError):
-        pass
+            value = element.text_all
+            if value and str(value).strip():
+                logger.debug("Extracted value using .text_all property")
+                return str(value).strip()
+    except AttributeError:
+        logger.debug("Element doesn't have .text_all property")
+    except (TypeError, Exception) as e:
+        logger.debug(f"Failed to get .text_all property: {type(e).__name__}: {e}")
 
+    # Strategy 3: Try .text property (fallback for text_all)
+    try:
+        if hasattr(element, 'text'):
+            value = element.text
+            if value and str(value).strip():
+                logger.debug("Extracted value using .text property")
+                return str(value).strip()
+    except AttributeError:
+        logger.debug("Element doesn't have .text property")
+    except (TypeError, Exception) as e:
+        logger.debug(f"Failed to get .text property: {type(e).__name__}: {e}")
+
+    # Strategy 4: Try JavaScript innerText (best for contenteditable)
+    if page is not None:
+        try:
+            # Find focused contenteditable or first visible one
+            # Note: We query globally for contenteditable element since Nodriver doesn't support
+            # passing element references to page.evaluate(). This assumes the target element
+            # is the primary/focused contenteditable input on the page.
+            js_code = '''
+            (() => {
+                // First try focused element
+                let el = document.activeElement;
+                if (!el || el.getAttribute('contenteditable') !== 'true') {
+                    // Fall back to first visible contenteditable
+                    el = document.querySelector('[contenteditable="true"]:not([style*="display: none"])');
+                }
+                if (!el) {
+                    // Final fallback: any contenteditable element
+                    el = document.querySelector('[contenteditable="true"]');
+                }
+                return el ? (el.innerText || '') : '';
+            })()
+            '''
+            value = await page.evaluate(js_code)
+            if value and str(value).strip():
+                logger.debug("Extracted value using JavaScript innerText")
+                return str(value).strip()
+        except Exception as e:
+            logger.debug(f"Failed to get innerText via JavaScript: {type(e).__name__}: {e}")
+
+        # Strategy 5: Try JavaScript textContent (fallback for innerText)
+        try:
+            # Find focused contenteditable or first visible one
+            # Note: Similar fallback strategy for textContent extraction
+            js_code = '''
+            (() => {
+                // First try focused element
+                let el = document.activeElement;
+                if (!el || el.getAttribute('contenteditable') !== 'true') {
+                    // Fall back to first visible contenteditable
+                    el = document.querySelector('[contenteditable="true"]:not([style*="display: none"])');
+                }
+                if (!el) {
+                    // Final fallback: any contenteditable element
+                    el = document.querySelector('[contenteditable="true"]');
+                }
+                return el ? (el.textContent || '') : '';
+            })()
+            '''
+            value = await page.evaluate(js_code)
+            if value and str(value).strip():
+                logger.debug("Extracted value using JavaScript textContent")
+                return str(value).strip()
+        except Exception as e:
+            logger.debug(f"Failed to get textContent via JavaScript: {type(e).__name__}: {e}")
+
+    logger.warning("All value extraction strategies failed, returning empty string")
     return ""
 
 
@@ -132,6 +215,7 @@ async def _clear_element(element) -> bool:
 async def type_like_human(
     element,
     text: str,
+    page: NodriverPage = None,
     verify: bool = True,
     max_retries: int = 2
 ) -> bool:
@@ -141,6 +225,7 @@ async def type_like_human(
     Args:
         element: Nodriver element to type into
         text: Text to type
+        page: Nodriver page object (used for contenteditable verification)
         verify: Whether to verify text was entered correctly
         max_retries: Maximum retry attempts on verification failure
 
@@ -179,7 +264,7 @@ async def type_like_human(
             # Verify text was entered correctly if requested
             if verify:
                 await asyncio.sleep(0.1)  # Brief pause before verification
-                entered_text = await _get_element_value(element)
+                entered_text = await _get_element_value(element, page)
 
                 if entered_text == text:
                     logger.debug(f"Typing verified successfully on attempt {attempt + 1}")
@@ -248,21 +333,29 @@ async def find_interactive_element(page: NodriverPage, selectors: List[str], tim
             if element:
                 # Check if element is visible and enabled
                 try:
-                    # Try to get element properties
+                    # Safely escape selector for JavaScript interpolation
+                    escaped_selector = json.dumps(selector)
+
+                    # Check visibility with safe string interpolation
                     is_visible = await page.evaluate(
-                        f'document.querySelector("{selector}") !== null && '
-                        f'window.getComputedStyle(document.querySelector("{selector}")).display !== "none" && '
-                        f'window.getComputedStyle(document.querySelector("{selector}")).visibility !== "hidden"'
+                        f'(() => {{'
+                        f'  const selector = {escaped_selector};'
+                        f'  const el = document.querySelector(selector);'
+                        f'  if (!el) return false;'
+                        f'  const style = window.getComputedStyle(el);'
+                        f'  return style.display !== "none" && style.visibility !== "hidden";'
+                        f'}})()'
                     )
 
                     if is_visible:
                         logger.debug(f"Found interactive element: {selector}")
                         return element
-                except:
+                except Exception as e:
                     # If we can't check visibility, assume it's visible
-                    logger.debug(f"Found element (visibility check skipped): {selector}")
+                    logger.debug(f"Found element (visibility check skipped): {selector}: {type(e).__name__}: {e}")
                     return element
-        except:
+        except Exception as e:
+            logger.debug(f"Selector {selector} failed: {type(e).__name__}: {e}")
             continue
 
     return None
@@ -287,15 +380,15 @@ async def health_check(page: NodriverPage) -> Dict[str, Any]:
         try:
             health['title'] = await page.evaluate('document.title')
             health['responsive'] = True
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Health check title evaluation failed: {type(e).__name__}: {e}")
 
         # Check if main content is present
         try:
             main = await page.select('main', timeout=2)
             health['main_content_present'] = main is not None
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Health check main content check failed: {type(e).__name__}: {e}")
 
     except Exception as e:
         logger.warning(f"Health check error: {e}")
