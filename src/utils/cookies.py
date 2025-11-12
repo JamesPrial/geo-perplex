@@ -66,11 +66,10 @@ class Cookie:
 
     @staticmethod
     def _normalize_domain(domain: str) -> str:
-        """Normalize domain by removing leading dot if present"""
-        normalized = domain.lstrip(".")
-        if not normalized:
-            raise ValueError('Domain cannot be empty after normalization')
-        return normalized
+        """Normalize domain - preserve leading dot for cookie domains"""
+        if not domain or domain == ".":
+            raise ValueError('Domain cannot be empty')
+        return domain  # Don't strip the leading dot!
 
     @property
     def is_session_cookie(self) -> bool:
@@ -254,6 +253,7 @@ class CookieManager:
                     continue
 
             logger.info(f"Loaded {len(self.cookies)} cookies from {cookie_path}")
+            print(f"✓ Loaded {len(self.cookies)} cookies from {cookie_path}")
             return len(self.cookies)
 
         except UnicodeDecodeError:
@@ -330,9 +330,13 @@ class CookieManager:
             logger.warning(f'Missing required authentication cookies: {missing}')
             logger.info(f'Required: {REQUIRED_COOKIES}')
             logger.info(f'Found: {cookie_names}')
+            print(f"⚠ Warning: Missing required authentication cookies: {', '.join(missing)}")
+            print(f"  Required: {', '.join(REQUIRED_COOKIES)}")
+            print(f"  Found: {', '.join(cookie_names)}")
             return False
 
         logger.info(f'All {len(REQUIRED_COOKIES)} required authentication cookies present')
+        print(f"✓ All required authentication cookies present")
         return True
 
     def get_all(self) -> List[Cookie]:
@@ -398,9 +402,30 @@ def load_cookies(auth_file_path: Optional[str] = None) -> List[Dict[str, Any]]:
         ValueError: If the cookie format is invalid
         json.JSONDecodeError: If the JSON is malformed
     """
-    manager = CookieManager()
-    manager.load_from_file(auth_file_path)
-    return manager.to_dict_list()
+    cookie_path = auth_file_path or os.path.join(os.getcwd(), 'auth.json')
+
+    try:
+        with open(cookie_path, 'r', encoding='utf-8-sig') as f:
+            cookie_data = f.read()
+            cookies_json = json.loads(cookie_data)
+
+        if not isinstance(cookies_json, list) or len(cookies_json) == 0:
+            raise ValueError('Invalid cookie format: expected non-empty array')
+
+        # Return raw dictionaries without validation
+        print(f"✓ Loaded {len(cookies_json)} cookies from {cookie_path}")
+        return cookies_json
+
+    except UnicodeDecodeError:
+        raise ValueError(
+            f"Cookie file appears to be binary or not UTF-8 encoded: {cookie_path}\n"
+            "Please ensure the file is a valid JSON text file."
+        )
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Cookie file not found: {cookie_path}\n"
+            "Please run the cookie extraction script first or check the file path."
+        )
 
 
 def validate_auth_cookies(cookies: List[Dict[str, Any]]) -> bool:
@@ -413,15 +438,28 @@ def validate_auth_cookies(cookies: List[Dict[str, Any]]) -> bool:
     Returns:
         True if essential authentication cookies are present, False otherwise
     """
-    # Convert to Cookie objects
-    cookie_objects = []
+    # Extract cookie names from raw dictionaries (handle malformed data gracefully)
+    cookie_names = []
     for cookie_dict in cookies:
-        try:
-            cookie = Cookie.from_dict(cookie_dict)
-            cookie_objects.append(cookie)
-        except Exception as e:
-            logger.warning(f'Skipping invalid cookie during validation: {e}')
-            continue
+        if isinstance(cookie_dict, dict):
+            name = cookie_dict.get('name')
+            if isinstance(name, str):  # Only add valid string names
+                cookie_names.append(name)
+        # Skip non-dict items and items with non-string names
 
-    manager = CookieManager(cookie_objects)
-    return manager.validate()
+    # Check if all required cookies are present
+    has_all_required = all(name in cookie_names for name in REQUIRED_COOKIES)
+
+    if not has_all_required:
+        missing = [name for name in REQUIRED_COOKIES if name not in cookie_names]
+        logger.warning(f'Missing required authentication cookies: {missing}')
+        logger.info(f'Required: {REQUIRED_COOKIES}')
+        logger.info(f'Found: {cookie_names}')
+        print(f"⚠ Warning: Missing required authentication cookies")
+        print(f"  Required: {', '.join(REQUIRED_COOKIES)}")
+        print(f"  Found: {', '.join(str(n) for n in cookie_names)}")
+        return False
+
+    logger.info(f'All {len(REQUIRED_COOKIES)} required authentication cookies present')
+    print(f"✓ All required authentication cookies present")
+    return True

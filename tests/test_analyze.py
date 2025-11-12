@@ -784,3 +784,792 @@ class TestCLIArgumentEdgeCases:
         # argparse treats multiple --full as same as one
         args = parser.parse_args(['recent', '--full', '--full'])
         assert args.full is True
+
+
+@pytest.mark.unit
+class TestFilterCommand:
+    """Tests for filter command with advanced criteria"""
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_filter_command_basic(self, mock_filter, capsys):
+        """Test filter command with basic options"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_filter
+        args = MagicMock(
+            model=None, query_pattern=None, start_date=None, end_date=None,
+            success_only=False, failed_only=False, min_exec_time=None,
+            max_exec_time=None, min_answer_length=None, max_answer_length=None,
+            has_sources=False, limit=None, order_by='timestamp', order_asc=False,
+            full=False
+        )
+
+        handle_filter(args)
+
+        captured = capsys.readouterr()
+        assert "Found 0 results matching filter criteria" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_filter_command_with_model(self, mock_filter, multiple_search_results, capsys):
+        """Test filter command with model filter"""
+        mock_filter.return_value = [multiple_search_results[0]]
+
+        from src.analyze import handle_filter
+        args = MagicMock(
+            model='gpt-4', query_pattern=None, start_date=None, end_date=None,
+            success_only=False, failed_only=False, min_exec_time=None,
+            max_exec_time=None, min_answer_length=None, max_answer_length=None,
+            has_sources=False, limit=None, order_by='timestamp', order_asc=False,
+            full=False
+        )
+
+        handle_filter(args)
+
+        captured = capsys.readouterr()
+        assert "Found 1 results matching filter criteria" in captured.out
+        mock_filter.assert_called_once()
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_filter_command_success_only(self, mock_filter, capsys):
+        """Test filter command with success_only flag"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_filter
+        args = MagicMock(
+            model=None, query_pattern=None, start_date=None, end_date=None,
+            success_only=True, failed_only=False, min_exec_time=None,
+            max_exec_time=None, min_answer_length=None, max_answer_length=None,
+            has_sources=False, limit=10, order_by='timestamp', order_asc=False,
+            full=False
+        )
+
+        handle_filter(args)
+
+        # Verify filter was called with success_only=True
+        call_args = mock_filter.call_args
+        assert call_args[1]['success_only'] is True
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_filter_command_date_range(self, mock_filter, capsys):
+        """Test filter command with date range"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_filter
+        args = MagicMock(
+            model=None, query_pattern=None, start_date='2025-01-01', end_date='2025-01-31',
+            success_only=False, failed_only=False, min_exec_time=None,
+            max_exec_time=None, min_answer_length=None, max_answer_length=None,
+            has_sources=False, limit=None, order_by='timestamp', order_asc=False,
+            full=False
+        )
+
+        handle_filter(args)
+
+        call_args = mock_filter.call_args
+        assert call_args[1]['start_date'] == '2025-01-01'
+        assert call_args[1]['end_date'] == '2025-01-31'
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_filter_command_execution_time_range(self, mock_filter, capsys):
+        """Test filter command with execution time constraints"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_filter
+        args = MagicMock(
+            model=None, query_pattern=None, start_date=None, end_date=None,
+            success_only=False, failed_only=False, min_exec_time=5.0,
+            max_exec_time=15.0, min_answer_length=None, max_answer_length=None,
+            has_sources=False, limit=None, order_by='timestamp', order_asc=False,
+            full=False
+        )
+
+        handle_filter(args)
+
+        call_args = mock_filter.call_args
+        assert call_args[1]['min_exec_time'] == 5.0
+        assert call_args[1]['max_exec_time'] == 15.0
+
+
+@pytest.mark.unit
+class TestSearchCommand:
+    """Tests for full-text search command"""
+
+    @patch('src.analyze._search_results')
+    def test_search_command_basic(self, mock_search, capsys):
+        """Test search command with basic term"""
+        mock_search.return_value = []
+
+        from src.analyze import handle_search
+        args = MagicMock(
+            search_term='python', search_in='answers', model=None,
+            case_sensitive=False, limit=None, full=False
+        )
+
+        handle_search(args)
+
+        captured = capsys.readouterr()
+        assert 'Found 0 results for: "python"' in captured.out
+
+    @patch('src.analyze._search_results')
+    def test_search_command_missing_term(self, mock_search, capsys):
+        """Test search command without search term"""
+        from src.analyze import handle_search
+        args = MagicMock(search_term=None, search_in='answers', model=None,
+                        case_sensitive=False, limit=None, full=False)
+
+        handle_search(args)
+
+        captured = capsys.readouterr()
+        assert "Error: search term is required" in captured.out
+
+    @patch('src.analyze._search_results')
+    def test_search_command_with_results(self, mock_search, multiple_search_results, capsys):
+        """Test search command returning results"""
+        mock_search.return_value = [multiple_search_results[0]]
+
+        from src.analyze import handle_search
+        args = MagicMock(
+            search_term='Python', search_in='answers', model=None,
+            case_sensitive=False, limit=10, full=False
+        )
+
+        handle_search(args)
+
+        captured = capsys.readouterr()
+        assert 'Found 1 results for: "Python"' in captured.out
+
+    @patch('src.analyze._search_results')
+    def test_search_command_case_sensitive(self, mock_search, capsys):
+        """Test search command with case-sensitive flag"""
+        mock_search.return_value = []
+
+        from src.analyze import handle_search
+        args = MagicMock(
+            search_term='Python', search_in='answers', model=None,
+            case_sensitive=True, limit=None, full=False
+        )
+
+        handle_search(args)
+
+        call_args = mock_search.call_args
+        assert call_args[1]['case_sensitive'] is True
+
+    @patch('src.analyze._search_results')
+    def test_search_command_search_in_sources(self, mock_search, capsys):
+        """Test search command searching in sources"""
+        mock_search.return_value = []
+
+        from src.analyze import handle_search
+        args = MagicMock(
+            search_term='example', search_in='sources', model=None,
+            case_sensitive=False, limit=None, full=False
+        )
+
+        handle_search(args)
+
+        call_args = mock_search.call_args
+        assert call_args[1]['search_in'] == 'sources'
+
+
+@pytest.mark.unit
+class TestStatsCommand:
+    """Tests for database statistics command"""
+
+    @patch('src.analyze._get_database_stats')
+    def test_stats_command_basic(self, mock_stats, capsys):
+        """Test stats command displays database statistics"""
+        mock_stats.return_value = {
+            'total_records': 100,
+            'unique_models': 5,
+            'unique_queries': 25,
+            'date_range': ('2025-01-01 10:00:00', '2025-01-11 15:00:00'),
+            'successful_records': 95,
+            'success_rate': 95.0,
+            'avg_execution_time': 11.5,
+            'avg_answer_length': 250.0
+        }
+
+        from src.analyze import handle_stats
+        args = MagicMock()
+
+        handle_stats(args)
+
+        captured = capsys.readouterr()
+        assert "DATABASE STATISTICS" in captured.out
+        assert "Total Records: 100" in captured.out
+        assert "Unique Queries: 25" in captured.out
+        assert "Unique Models: 5" in captured.out
+
+    @patch('src.analyze._get_database_stats')
+    def test_stats_command_empty_database(self, mock_stats, capsys):
+        """Test stats command with empty database"""
+        mock_stats.return_value = {
+            'total_records': 0,
+            'unique_models': 0,
+            'unique_queries': 0,
+            'date_range': (None, None),
+            'successful_records': 0,
+            'success_rate': 0.0,
+            'avg_execution_time': 0.0,
+            'avg_answer_length': 0.0
+        }
+
+        from src.analyze import handle_stats
+        args = MagicMock()
+
+        handle_stats(args)
+
+        captured = capsys.readouterr()
+        assert "Total Records: 0" in captured.out
+
+
+@pytest.mark.unit
+class TestStatsModelCommand:
+    """Tests for per-model statistics command"""
+
+    @patch('src.analyze._get_model_stats')
+    def test_stats_model_command_all_models(self, mock_stats, capsys):
+        """Test stats-model command showing all models"""
+        mock_stats.return_value = [
+            {
+                'model': 'gpt-4',
+                'record_count': 50,
+                'successful': 48,
+                'avg_exec_time': 11.0,
+                'min_exec_time': 8.5,
+                'max_exec_time': 14.2,
+                'avg_answer_length': 300.0,
+                'unique_queries': 10
+            },
+            {
+                'model': 'claude-3',
+                'record_count': 50,
+                'successful': 47,
+                'avg_exec_time': 12.5,
+                'min_exec_time': 9.0,
+                'max_exec_time': 15.0,
+                'avg_answer_length': 280.0,
+                'unique_queries': 12
+            }
+        ]
+
+        from src.analyze import handle_stats_model
+        args = MagicMock(model=None, start_date=None, end_date=None, full=False)
+
+        handle_stats_model(args)
+
+        captured = capsys.readouterr()
+        assert "MODEL STATISTICS" in captured.out
+        assert "gpt-4" in captured.out
+        assert "claude-3" in captured.out
+
+    @patch('src.analyze._get_model_stats')
+    def test_stats_model_command_specific_model(self, mock_stats, capsys):
+        """Test stats-model command for specific model"""
+        mock_stats.return_value = [
+            {
+                'model': 'gpt-4',
+                'record_count': 50,
+                'successful': 48,
+                'avg_exec_time': 11.0,
+                'min_exec_time': 8.5,
+                'max_exec_time': 14.2,
+                'avg_answer_length': 300.0,
+                'avg_sources': 3.5
+            }
+        ]
+
+        from src.analyze import handle_stats_model
+        args = MagicMock(model='gpt-4', start_date=None, end_date=None, full=True)
+
+        handle_stats_model(args)
+
+        captured = capsys.readouterr()
+        assert "Model: gpt-4" in captured.out
+        assert "Records: 50" in captured.out
+
+    @patch('src.analyze._get_model_stats')
+    def test_stats_model_command_no_data(self, mock_stats, capsys):
+        """Test stats-model command with no data"""
+        mock_stats.return_value = []
+
+        from src.analyze import handle_stats_model
+        args = MagicMock(model='nonexistent', start_date=None, end_date=None, full=False)
+
+        handle_stats_model(args)
+
+        captured = capsys.readouterr()
+        assert "No data found" in captured.out
+
+
+@pytest.mark.unit
+class TestStatsTrendsCommand:
+    """Tests for trend analysis command"""
+
+    @patch('src.analyze._get_trend_data')
+    def test_stats_trends_execution_time(self, mock_trends, capsys):
+        """Test stats-trends command for execution time metric"""
+        mock_trends.return_value = [
+            {'period': '2025-01-11', 'value': 11.5, 'count': 10},
+            {'period': '2025-01-10', 'value': 10.8, 'count': 12}
+        ]
+
+        from src.analyze import handle_stats_trends
+        args = MagicMock(
+            metric='execution_time', period='day', limit=None, model=None
+        )
+
+        handle_stats_trends(args)
+
+        captured = capsys.readouterr()
+        assert "TREND ANALYSIS" in captured.out
+        assert "2025-01-11" in captured.out
+        assert "11.50s" in captured.out
+
+    @patch('src.analyze._get_trend_data')
+    def test_stats_trends_success_rate(self, mock_trends, capsys):
+        """Test stats-trends command for success rate metric"""
+        mock_trends.return_value = [
+            {'period': '2025-01-11', 'value': 95.0, 'count': 20}
+        ]
+
+        from src.analyze import handle_stats_trends
+        args = MagicMock(
+            metric='success_rate', period='day', limit=10, model=None
+        )
+
+        handle_stats_trends(args)
+
+        captured = capsys.readouterr()
+        assert "95.0%" in captured.out
+
+    @patch('src.analyze._get_trend_data')
+    def test_stats_trends_no_data(self, mock_trends, capsys):
+        """Test stats-trends command with no trend data"""
+        mock_trends.return_value = []
+
+        from src.analyze import handle_stats_trends
+        args = MagicMock(
+            metric='answer_length', period='week', limit=None, model=None
+        )
+
+        handle_stats_trends(args)
+
+        captured = capsys.readouterr()
+        assert "No trend data found" in captured.out
+
+
+@pytest.mark.unit
+class TestStatsPerformanceCommand:
+    """Tests for performance comparison command"""
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_stats_performance_basic(self, mock_filter, multiple_search_results, capsys):
+        """Test stats-performance command basic operation"""
+        mock_filter.return_value = multiple_search_results
+
+        from src.analyze import handle_stats_performance
+        args = MagicMock(query=None, start_date=None, end_date=None)
+
+        handle_stats_performance(args)
+
+        captured = capsys.readouterr()
+        assert "PERFORMANCE COMPARISON" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_stats_performance_no_results(self, mock_filter, capsys):
+        """Test stats-performance command with no results"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_stats_performance
+        args = MagicMock(query=None, start_date=None, end_date=None)
+
+        handle_stats_performance(args)
+
+        captured = capsys.readouterr()
+        assert "No results found" in captured.out
+
+
+@pytest.mark.unit
+class TestExportCSVCommand:
+    """Tests for CSV export command"""
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_csv_creates_file(self, mock_filter, multiple_search_results, tmp_path, capsys):
+        """Test export-csv command creates valid CSV file"""
+        mock_filter.return_value = multiple_search_results[:2]
+
+        from src.analyze import handle_export_csv
+        output_file = tmp_path / "results.csv"
+
+        args = MagicMock(
+            output=str(output_file), model=None, query_pattern=None,
+            start_date=None, end_date=None, success_only=False, failed_only=False,
+            min_exec_time=None, max_exec_time=None, min_answer_length=None,
+            max_answer_length=None, has_sources=False, include_sources=False, limit=None
+        )
+
+        handle_export_csv(args)
+
+        assert output_file.exists()
+        content = output_file.read_text()
+        assert "query" in content
+        assert "What is Python?" in content
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_csv_missing_output_path(self, mock_filter, capsys):
+        """Test export-csv command without output path"""
+        from src.analyze import handle_export_csv
+        args = MagicMock(output=None)
+
+        handle_export_csv(args)
+
+        captured = capsys.readouterr()
+        assert "Error: output path is required" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_csv_no_results(self, mock_filter, tmp_path, capsys):
+        """Test export-csv command with no matching results"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_export_csv
+        output_file = tmp_path / "results.csv"
+
+        args = MagicMock(
+            output=str(output_file), model=None, query_pattern=None,
+            start_date=None, end_date=None, success_only=False, failed_only=False,
+            min_exec_time=None, max_exec_time=None, min_answer_length=None,
+            max_answer_length=None, has_sources=False, include_sources=False, limit=None
+        )
+
+        handle_export_csv(args)
+
+        captured = capsys.readouterr()
+        assert "No results found matching criteria" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_csv_includes_sources(self, mock_filter, multiple_search_results, tmp_path, capsys):
+        """Test export-csv command with source count included"""
+        mock_filter.return_value = multiple_search_results[:1]
+
+        from src.analyze import handle_export_csv
+        output_file = tmp_path / "results.csv"
+
+        args = MagicMock(
+            output=str(output_file), model=None, query_pattern=None,
+            start_date=None, end_date=None, success_only=False, failed_only=False,
+            min_exec_time=None, max_exec_time=None, min_answer_length=None,
+            max_answer_length=None, has_sources=False, include_sources=True, limit=None
+        )
+
+        handle_export_csv(args)
+
+        captured = capsys.readouterr()
+        assert "CSV Export Complete!" in captured.out
+        assert output_file.exists()
+
+
+@pytest.mark.unit
+class TestExportMarkdownCommand:
+    """Tests for Markdown export command"""
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_md_creates_file(self, mock_filter, multiple_search_results, tmp_path, capsys):
+        """Test export-md command creates valid Markdown file"""
+        mock_filter.return_value = multiple_search_results[:2]
+
+        from src.analyze import handle_export_md
+        output_file = tmp_path / "report.md"
+
+        args = MagicMock(
+            output=str(output_file), model=None, query_pattern=None,
+            start_date=None, end_date=None, success_only=False, failed_only=False,
+            min_exec_time=None, max_exec_time=None, min_answer_length=None,
+            max_answer_length=None, has_sources=False, limit=None, full=False
+        )
+
+        handle_export_md(args)
+
+        assert output_file.exists()
+        content = output_file.read_text()
+        assert "# Search Results Report" in content
+        assert "What is Python?" in content
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_md_missing_output_path(self, mock_filter, capsys):
+        """Test export-md command without output path"""
+        from src.analyze import handle_export_md
+        args = MagicMock(output=None)
+
+        handle_export_md(args)
+
+        captured = capsys.readouterr()
+        assert "Error: output path is required" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_md_full_answers(self, mock_filter, multiple_search_results, tmp_path, capsys):
+        """Test export-md command with full answer text"""
+        mock_filter.return_value = multiple_search_results[:1]
+
+        from src.analyze import handle_export_md
+        output_file = tmp_path / "report.md"
+
+        args = MagicMock(
+            output=str(output_file), model=None, query_pattern=None,
+            start_date=None, end_date=None, success_only=False, failed_only=False,
+            min_exec_time=None, max_exec_time=None, min_answer_length=None,
+            max_answer_length=None, has_sources=False, limit=None, full=True
+        )
+
+        handle_export_md(args)
+
+        assert output_file.exists()
+        content = output_file.read_text()
+        # Should contain full answer when full=True
+        assert "Python is a high-level programming language" in content
+
+
+@pytest.mark.unit
+class TestExportBatchCommand:
+    """Tests for batch export command"""
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_batch_creates_directory(self, mock_filter, multiple_search_results, tmp_path, capsys):
+        """Test export-batch command creates output directory"""
+        mock_filter.return_value = multiple_search_results
+
+        from src.analyze import handle_export_batch
+        output_dir = tmp_path / "exports"
+
+        args = MagicMock(
+            output_dir=str(output_dir), format='json', group_by='model'
+        )
+
+        handle_export_batch(args)
+
+        captured = capsys.readouterr()
+        assert "Batch Export Complete!" in captured.out
+        assert "Groups created:" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_batch_missing_output_dir(self, mock_filter, capsys):
+        """Test export-batch command without output directory"""
+        from src.analyze import handle_export_batch
+        args = MagicMock(output_dir=None)
+
+        handle_export_batch(args)
+
+        captured = capsys.readouterr()
+        assert "Error: output directory is required" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_batch_no_results(self, mock_filter, tmp_path, capsys):
+        """Test export-batch command with no results"""
+        mock_filter.return_value = []
+
+        from src.analyze import handle_export_batch
+        output_dir = tmp_path / "exports"
+
+        args = MagicMock(output_dir=str(output_dir), format='json', group_by='model')
+
+        handle_export_batch(args)
+
+        captured = capsys.readouterr()
+        assert "No results found" in captured.out
+
+    @patch('src.analyze._filter_results_advanced')
+    def test_export_batch_csv_format(self, mock_filter, multiple_search_results, tmp_path, capsys):
+        """Test export-batch command with CSV format"""
+        mock_filter.return_value = multiple_search_results
+
+        from src.analyze import handle_export_batch
+        output_dir = tmp_path / "exports"
+
+        args = MagicMock(output_dir=str(output_dir), format='csv', group_by='date')
+
+        handle_export_batch(args)
+
+        captured = capsys.readouterr()
+        assert "Batch Export Complete!" in captured.out
+
+
+@pytest.mark.unit
+class TestDuplicatesCommand:
+    """Tests for duplicate detection command"""
+
+    @patch('src.analyze._find_duplicates')
+    def test_duplicates_command_found_exact(self, mock_dups, capsys):
+        """Test duplicates command finding exact duplicates"""
+        mock_dups.return_value = {
+            'What is Python?': [
+                ('What is Python?', 1.0),
+                ('What is Python?', 1.0)
+            ]
+        }
+
+        from src.analyze import handle_duplicates
+        args = MagicMock(exact=True)
+
+        handle_duplicates(args)
+
+        captured = capsys.readouterr()
+        assert "Found 1 groups of similar queries" in captured.out
+        assert "What is Python?" in captured.out
+
+    @patch('src.analyze._find_duplicates')
+    def test_duplicates_command_no_duplicates(self, mock_dups, capsys):
+        """Test duplicates command when no duplicates found"""
+        mock_dups.return_value = {}
+
+        from src.analyze import handle_duplicates
+        args = MagicMock(exact=False)
+
+        handle_duplicates(args)
+
+        captured = capsys.readouterr()
+        assert "No duplicates found" in captured.out
+
+    @patch('src.analyze._find_duplicates')
+    def test_duplicates_command_similar(self, mock_dups, capsys):
+        """Test duplicates command finding similar queries"""
+        mock_dups.return_value = {
+            'What is Python?': [
+                ('What is Python?', 1.0),
+                ('What is python?', 0.95),
+                ('What is Python programming?', 0.85)
+            ]
+        }
+
+        from src.analyze import handle_duplicates
+        args = MagicMock(exact=False)
+
+        handle_duplicates(args)
+
+        captured = capsys.readouterr()
+        assert "Found" in captured.out
+        assert "similarity:" in captured.out
+
+
+@pytest.mark.unit
+class TestCleanupCommand:
+    """Tests for cleanup command"""
+
+    @patch('src.analyze._get_connection')
+    def test_cleanup_command_dry_run(self, mock_conn, capsys):
+        """Test cleanup command with dry-run mode"""
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 5
+        mock_conn_instance = MagicMock()
+        mock_conn_instance.cursor.return_value = mock_cursor
+        mock_conn.return_value = mock_conn_instance
+
+        from src.analyze import handle_cleanup
+        args = MagicMock(
+            dry_run=True, confirm=False, remove_duplicates=True,
+            archive_before=None
+        )
+
+        handle_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "[DRY-RUN]" in captured.out
+
+    @patch('src.analyze._get_connection')
+    def test_cleanup_command_missing_confirm(self, mock_conn, capsys):
+        """Test cleanup command without confirmation"""
+        from src.analyze import handle_cleanup
+        args = MagicMock(dry_run=False, confirm=False)
+
+        handle_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "Use --confirm" in captured.out
+
+    @patch('src.analyze._get_connection')
+    def test_cleanup_command_remove_duplicates(self, mock_conn, capsys):
+        """Test cleanup command removing duplicates"""
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 10
+        mock_conn_instance = MagicMock()
+        mock_conn_instance.cursor.return_value = mock_cursor
+        mock_conn_instance.commit = MagicMock()
+        mock_conn.return_value = mock_conn_instance
+
+        from src.analyze import handle_cleanup
+        args = MagicMock(
+            dry_run=False, confirm=True, remove_duplicates=True,
+            archive_before=None
+        )
+
+        handle_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "Removed 10 duplicate records" in captured.out
+
+    @patch('src.analyze._get_connection')
+    def test_cleanup_command_archive_before(self, mock_conn, capsys):
+        """Test cleanup command archiving old failed records"""
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 3
+        mock_conn_instance = MagicMock()
+        mock_conn_instance.cursor.return_value = mock_cursor
+        mock_conn_instance.commit = MagicMock()
+        mock_conn.return_value = mock_conn_instance
+
+        from src.analyze import handle_cleanup
+        args = MagicMock(
+            dry_run=False, confirm=True, remove_duplicates=False,
+            archive_before='2025-01-01'
+        )
+
+        handle_cleanup(args)
+
+        captured = capsys.readouterr()
+        assert "Archived 3 failed records" in captured.out
+
+
+@pytest.mark.unit
+class TestInfoCommand:
+    """Tests for database info command"""
+
+    @patch('src.analyze.DB_PATH')
+    @patch('src.analyze._get_connection')
+    def test_info_command_displays_health(self, mock_conn_func, mock_db_path, capsys, tmp_path):
+        """Test info command displays database health information"""
+        # Create a temporary database file
+        test_db = tmp_path / "test.db"
+        test_db.touch()
+        mock_db_path.exists.return_value = True
+        mock_db_path.stat.return_value = MagicMock(st_size=1024000)
+
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.side_effect = [
+            (100,),  # record_count
+            (1024000,)  # db_size
+        ]
+        mock_conn_instance = MagicMock()
+        mock_conn_instance.cursor.return_value = mock_cursor
+        mock_conn_func.return_value = mock_conn_instance
+
+        from src.analyze import handle_info
+        args = MagicMock()
+
+        handle_info(args)
+
+        captured = capsys.readouterr()
+        assert "DATABASE HEALTH INFORMATION" in captured.out
+        assert "File Size:" in captured.out
+        assert "Record Count:" in captured.out
+
+    @patch('src.analyze.DB_PATH')
+    def test_info_command_database_not_found(self, mock_db_path, capsys):
+        """Test info command when database doesn't exist"""
+        mock_db_path.exists.return_value = False
+
+        from src.analyze import handle_info
+        args = MagicMock()
+
+        handle_info(args)
+
+        captured = capsys.readouterr()
+        assert "Database not found" in captured.out

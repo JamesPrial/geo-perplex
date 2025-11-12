@@ -303,3 +303,435 @@ def get_unique_models() -> List[str]:
     conn.close()
 
     return models
+
+
+def _parse_results(rows: List) -> List[Dict]:
+    """
+    Helper function to convert database rows to result dictionaries with parsed JSON.
+
+    Args:
+        rows: List of sqlite3.Row objects
+
+    Returns:
+        List of result dictionaries with parsed sources JSON
+    """
+    results = []
+    for row in rows:
+        result = dict(row)
+        try:
+            result['sources'] = json.loads(result['sources']) if result['sources'] else []
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse sources JSON for result ID {result.get('id')}: {e}")
+            result['sources'] = []
+        results.append(result)
+    return results
+
+
+def get_results_by_date_range(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    model: Optional[str] = None,
+    limit: Optional[int] = None
+) -> List[Dict]:
+    """
+    Get results within a date range, optionally filtered by model.
+
+    Args:
+        start_date: Start date (ISO format: YYYY-MM-DD or datetime string)
+        end_date: End date (ISO format: YYYY-MM-DD or datetime string)
+        model: Optional model to filter by
+        limit: Maximum number of results to return
+
+    Returns:
+        List of result dictionaries ordered by timestamp descending
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    conditions = []
+    params = []
+
+    if start_date:
+        conditions.append('timestamp >= ?')
+        params.append(start_date)
+
+    if end_date:
+        conditions.append('timestamp <= ?')
+        params.append(end_date)
+
+    if model:
+        conditions.append('model = ?')
+        params.append(model)
+
+    where_clause = ' AND '.join(conditions) if conditions else '1=1'
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    query = '''
+        SELECT * FROM search_results
+        WHERE {}
+        ORDER BY timestamp DESC
+    '''.format(where_clause)
+
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
+
+
+def get_results_by_success_status(success: bool = True, limit: Optional[int] = None) -> List[Dict]:
+    """
+    Get results filtered by success/failure status.
+
+    Args:
+        success: True for successful results, False for failed results
+        limit: Maximum number of results to return
+
+    Returns:
+        List of result dictionaries ordered by timestamp descending
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    success_value = 1 if success else 0
+
+    query = '''
+        SELECT * FROM search_results
+        WHERE success = ?
+        ORDER BY timestamp DESC
+    '''
+
+    params = [success_value]
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
+
+
+def get_results_by_execution_time(
+    min_time: Optional[float] = None,
+    max_time: Optional[float] = None,
+    limit: Optional[int] = None
+) -> List[Dict]:
+    """
+    Get results filtered by execution time.
+
+    Args:
+        min_time: Minimum execution time in seconds (inclusive)
+        max_time: Maximum execution time in seconds (inclusive)
+        limit: Maximum number of results to return
+
+    Returns:
+        List of result dictionaries ordered by execution_time_seconds ascending
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    conditions = ['execution_time_seconds IS NOT NULL']
+    params = []
+
+    if min_time is not None:
+        conditions.append('execution_time_seconds >= ?')
+        params.append(min_time)
+
+    if max_time is not None:
+        conditions.append('execution_time_seconds <= ?')
+        params.append(max_time)
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    where_clause = ' AND '.join(conditions)
+
+    query = '''
+        SELECT * FROM search_results
+        WHERE {}
+        ORDER BY execution_time_seconds ASC
+    '''.format(where_clause)
+
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
+
+
+def search_in_answers(
+    search_term: str,
+    case_sensitive: bool = False,
+    limit: Optional[int] = None
+) -> List[Dict]:
+    """
+    Full-text search within answer_text field.
+
+    Args:
+        search_term: Text to search for
+        case_sensitive: If False, search is case-insensitive
+        limit: Maximum number of results to return
+
+    Returns:
+        List of result dictionaries ordered by timestamp descending
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    if case_sensitive:
+        query = '''
+            SELECT * FROM search_results
+            WHERE answer_text GLOB ?
+            ORDER BY timestamp DESC
+        '''
+        params = [f'*{search_term}*']
+    else:
+        # SQLite is case-insensitive by default for ASCII characters
+        query = '''
+            SELECT * FROM search_results
+            WHERE LOWER(answer_text) LIKE LOWER(?)
+            ORDER BY timestamp DESC
+        '''
+        params = [f'%{search_term}%']
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
+
+
+def search_in_sources(
+    search_term: str,
+    case_sensitive: bool = False,
+    limit: Optional[int] = None
+) -> List[Dict]:
+    """
+    Full-text search within sources JSON field.
+
+    Args:
+        search_term: Text to search for in sources
+        case_sensitive: If False, search is case-insensitive
+        limit: Maximum number of results to return
+
+    Returns:
+        List of result dictionaries with matching sources
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    if case_sensitive:
+        query = '''
+            SELECT * FROM search_results
+            WHERE sources GLOB ?
+            ORDER BY timestamp DESC
+        '''
+        params = [f'*{search_term}*']
+    else:
+        query = '''
+            SELECT * FROM search_results
+            WHERE LOWER(sources) LIKE LOWER(?)
+            ORDER BY timestamp DESC
+        '''
+        params = [f'%{search_term}%']
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
+
+
+def search_queries_fuzzy(pattern: str, limit: Optional[int] = None) -> List[Dict]:
+    """
+    Fuzzy search for queries using SQL LIKE pattern matching.
+
+    Args:
+        pattern: Fuzzy pattern to search for (use % for wildcards)
+        limit: Maximum number of results to return
+
+    Returns:
+        List of result dictionaries ordered by timestamp descending
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    query = '''
+        SELECT * FROM search_results
+        WHERE query LIKE ?
+        ORDER BY timestamp DESC
+    '''
+
+    params = [pattern]
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
+
+
+def get_results_advanced_filter(
+    query_pattern: Optional[str] = None,
+    model: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    success: Optional[bool] = None,
+    min_exec_time: Optional[float] = None,
+    max_exec_time: Optional[float] = None,
+    min_answer_length: Optional[int] = None,
+    max_answer_length: Optional[int] = None,
+    has_sources: Optional[bool] = None,
+    limit: Optional[int] = None,
+    order_by: str = 'timestamp',
+    order_desc: bool = True
+) -> List[Dict]:
+    """
+    Advanced filtering with multiple criteria combined.
+
+    Args:
+        query_pattern: Query text pattern (use % for LIKE wildcards)
+        model: Specific model to filter by
+        start_date: Start date (ISO format: YYYY-MM-DD or datetime string)
+        end_date: End date (ISO format: YYYY-MM-DD or datetime string)
+        success: None=all, True=successful only, False=failed only
+        min_exec_time: Minimum execution time in seconds
+        max_exec_time: Maximum execution time in seconds
+        min_answer_length: Minimum answer text length in characters
+        max_answer_length: Maximum answer text length in characters
+        has_sources: None=all, True=has sources, False=no sources
+        limit: Maximum number of results to return
+        order_by: Sort column ('timestamp', 'execution_time_seconds', 'query', 'model', 'id')
+        order_desc: True for descending order, False for ascending
+
+    Returns:
+        List of result dictionaries matching all criteria
+
+    Raises:
+        ValueError: If order_by is not in whitelist or limit is invalid
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    conditions = []
+    params = []
+
+    if query_pattern:
+        conditions.append('query LIKE ?')
+        params.append(query_pattern)
+
+    if model:
+        conditions.append('model = ?')
+        params.append(model)
+
+    if start_date:
+        conditions.append('timestamp >= ?')
+        params.append(start_date)
+
+    if end_date:
+        conditions.append('timestamp <= ?')
+        params.append(end_date)
+
+    if success is not None:
+        conditions.append('success = ?')
+        params.append(1 if success else 0)
+
+    if min_exec_time is not None:
+        conditions.append('execution_time_seconds >= ?')
+        params.append(min_exec_time)
+
+    if max_exec_time is not None:
+        conditions.append('execution_time_seconds <= ?')
+        params.append(max_exec_time)
+
+    if min_answer_length is not None:
+        conditions.append('LENGTH(answer_text) >= ?')
+        params.append(min_answer_length)
+
+    if max_answer_length is not None:
+        conditions.append('LENGTH(answer_text) <= ?')
+        params.append(max_answer_length)
+
+    if has_sources is not None:
+        if has_sources:
+            conditions.append('sources IS NOT NULL AND sources != ?')
+            params.append('[]')
+        else:
+            conditions.append('(sources IS NULL OR sources = ?)')
+            params.append('[]')
+
+    # Validate order_by to prevent SQL injection - whitelist approach
+    valid_order_columns = {'timestamp', 'execution_time_seconds', 'query', 'model', 'id'}
+    if order_by not in valid_order_columns:
+        logger.warning(f"Invalid order_by: {order_by}. Defaulting to 'timestamp'")
+        order_by = 'timestamp'
+
+    # Validate limit is a positive integer
+    if limit is not None and (not isinstance(limit, int) or limit <= 0):
+        raise ValueError("limit must be a positive integer")
+
+    order_direction = 'DESC' if order_desc else 'ASC'
+
+    where_clause = ' AND '.join(conditions) if conditions else '1=1'
+
+    query = '''
+        SELECT * FROM search_results
+        WHERE {}
+        ORDER BY {} {}
+    '''.format(where_clause, order_by, order_direction)
+
+    if limit:
+        query += ' LIMIT ?'
+        params.append(limit)
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _parse_results(rows)
