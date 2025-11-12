@@ -187,6 +187,11 @@ SELECTORS = {
         '[aria-label="New Thread"]',            # New Thread button by aria-label
         '[aria-label="Account"]',               # Account button
     ],
+    'navigation_buttons': [
+        'button[data-testid="sidebar-new-thread"]',  # New chat button (+ icon)
+        'button[aria-label="New Thread"]',            # New chat by aria-label
+        '[data-testid="sidebar-new-thread"]',         # Fallback without button tag
+    ],
     'loading_indicators': [
         '[class*="thinking" i]',
         '[class*="loading" i]',
