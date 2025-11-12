@@ -5,7 +5,7 @@ Tests formatting, display functions, and CLI argument parsing.
 import pytest
 import argparse
 from io import StringIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, PropertyMock
 from datetime import datetime
 from src.analyze import (
     format_timestamp,
@@ -1485,15 +1485,17 @@ class TestCleanupCommand:
         captured = capsys.readouterr()
         assert "Use --confirm" in captured.out
 
-    @patch('src.analyze._get_connection')
-    def test_cleanup_command_remove_duplicates(self, mock_conn, capsys):
+    @patch('src.analyze.sqlite3.connect')
+    def test_cleanup_command_remove_duplicates(self, mock_connect, capsys):
         """Test cleanup command removing duplicates"""
         mock_cursor = MagicMock()
-        mock_cursor.rowcount = 10
+        type(mock_cursor).rowcount = PropertyMock(return_value=10)
         mock_conn_instance = MagicMock()
         mock_conn_instance.cursor.return_value = mock_cursor
         mock_conn_instance.commit = MagicMock()
-        mock_conn.return_value = mock_conn_instance
+        mock_conn_instance.__enter__ = MagicMock(return_value=mock_conn_instance)
+        mock_conn_instance.__exit__ = MagicMock(return_value=False)
+        mock_connect.return_value = mock_conn_instance
 
         from src.analyze import handle_cleanup
         args = MagicMock(
@@ -1506,15 +1508,17 @@ class TestCleanupCommand:
         captured = capsys.readouterr()
         assert "Removed 10 duplicate records" in captured.out
 
-    @patch('src.analyze._get_connection')
-    def test_cleanup_command_archive_before(self, mock_conn, capsys):
+    @patch('src.analyze.sqlite3.connect')
+    def test_cleanup_command_archive_before(self, mock_connect, capsys):
         """Test cleanup command archiving old failed records"""
         mock_cursor = MagicMock()
-        mock_cursor.rowcount = 3
+        type(mock_cursor).rowcount = PropertyMock(return_value=3)
         mock_conn_instance = MagicMock()
         mock_conn_instance.cursor.return_value = mock_cursor
         mock_conn_instance.commit = MagicMock()
-        mock_conn.return_value = mock_conn_instance
+        mock_conn_instance.__enter__ = MagicMock(return_value=mock_conn_instance)
+        mock_conn_instance.__exit__ = MagicMock(return_value=False)
+        mock_connect.return_value = mock_conn_instance
 
         from src.analyze import handle_cleanup
         args = MagicMock(
@@ -1533,8 +1537,8 @@ class TestInfoCommand:
     """Tests for database info command"""
 
     @patch('src.analyze.DB_PATH')
-    @patch('src.analyze._get_connection')
-    def test_info_command_displays_health(self, mock_conn_func, mock_db_path, capsys, tmp_path):
+    @patch('src.analyze.sqlite3.connect')
+    def test_info_command_displays_health(self, mock_connect, mock_db_path, capsys, tmp_path):
         """Test info command displays database health information"""
         # Create a temporary database file
         test_db = tmp_path / "test.db"
@@ -1549,7 +1553,9 @@ class TestInfoCommand:
         ]
         mock_conn_instance = MagicMock()
         mock_conn_instance.cursor.return_value = mock_cursor
-        mock_conn_func.return_value = mock_conn_instance
+        mock_conn_instance.__enter__ = MagicMock(return_value=mock_conn_instance)
+        mock_conn_instance.__exit__ = MagicMock(return_value=False)
+        mock_connect.return_value = mock_conn_instance
 
         from src.analyze import handle_info
         args = MagicMock()
