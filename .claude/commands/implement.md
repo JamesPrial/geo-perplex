@@ -11,6 +11,8 @@ Implement: $ARGUMENTS
 You MUST follow this exact workflow pattern:
 
 ### Phase 1: Planning
+0. ALWAYS PROACTIVELY activate the nodriver skill
+
 1. First, create a detailed implementation plan that includes:
    - Files that need to be created or modified
    - Key functions/classes/modules to implement
