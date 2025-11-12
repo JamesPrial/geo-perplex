@@ -2,7 +2,7 @@
 name: python-code-reviewer
 description: Use this agent when the user has written or modified Python code and wants expert review. This includes after implementing new functions, refactoring existing code, fixing bugs, or completing a logical chunk of work. The agent should be called proactively after code changes are complete to provide feedback on code quality, best practices, and potential improvements.\n\nExamples:\n- Context: User just wrote a new function to process search results\n  user: "I've added a function to parse the Perplexity search results"\n  assistant: <writes or shows the function>\n  assistant: "Let me use the python-code-reviewer agent to review this code for best practices and potential improvements"\n  <launches python-code-reviewer agent via Task tool>\n\n- Context: User refactored database storage logic\n  user: "I refactored the storage.py module to use connection pooling"\n  assistant: <shows the refactored code>\n  assistant: "I'll have the python-code-reviewer agent analyze this refactoring for correctness and performance"\n  <launches python-code-reviewer agent via Task tool>\n\n- Context: User fixed a bug in authentication\n  user: "Fixed the cookie injection race condition"\n  assistant: <shows the fix>\n  assistant: "Let me use the python-code-reviewer agent to verify this fix follows best practices"\n  <launches python-code-reviewer agent via Task tool>
 tools: Bash, Skill, Glob, Grep, Read, WebFetch, TodoWrite, WebSearch, BashOutput, KillShell
-model: opus
+model: sonnet
 color: blue
 ---
 
