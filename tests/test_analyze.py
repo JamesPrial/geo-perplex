@@ -153,7 +153,7 @@ class TestPrintResult:
             assert source['text'] in output
 
     def test_print_result_limits_sources_to_five(self, capsys):
-        """Test that only first 5 sources are shown"""
+        """Test that all sources are shown"""
         result_many_sources = {
             'id': 1,
             'query': 'Test',
@@ -170,13 +170,9 @@ class TestPrintResult:
         captured = capsys.readouterr()
         output = captured.out
 
-        # Should show first 5 sources
-        for i in range(5):
+        # Should show all sources
+        for i in range(10):
             assert f'Source {i}' in output
-
-        # Should not show sources 6-9
-        for i in range(6, 10):
-            assert f'Source {i}' not in output
 
 
 @pytest.mark.unit
