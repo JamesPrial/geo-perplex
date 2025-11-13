@@ -22,6 +22,7 @@ from src.config import (
 )
 from src.browser.interactions import human_delay
 from src.browser.element_waiter import ElementWaiter
+from src.browser.smart_click import SmartClicker
 from src.types import NodriverPage
 
 logger = logging.getLogger(__name__)
@@ -303,24 +304,81 @@ async def collapse_sources_if_expanded(page: NodriverPage) -> bool:
             logger.debug("Sources button not found (already collapsed or not present)")
             return False
 
-        button_text = sources_button.text_all.strip() if sources_button.text_all else "Unknown"
-        logger.info(f"Found sources button: '{button_text}'")
-
-        # Click the button to collapse sources
-        logger.debug("Clicking sources button to collapse...")
-        try:
-            await sources_button.click()
-        except Exception as e:
-            logger.warning(f"Failed to click sources button: {e}")
+        # Check if sources are already collapsed BEFORE clicking
+        button_text = sources_button.text_all.strip() if sources_button.text_all else ""
+        if re.match(r'^\s*\d+\s+sources?\s*$', button_text, re.IGNORECASE):
+            logger.debug(f"Sources already collapsed (button text: '{button_text}')")
             return False
 
-        # Wait for collapse (human-like delay + buffer for DOM updates)
-        # Wait for collapse (shorter than expansion since we only hide elements, no verification needed)
-        await human_delay('short')  # 0.3-0.7 seconds
-        await asyncio.sleep(0.5)     # Additional buffer
+        logger.info(f"Found sources button: '{button_text}'")
 
-        logger.info("✓ Sources panel collapsed successfully")
-        return True
+        # Count links before collapse
+        try:
+            links_before = await page.select_all('a[href^="http"]')
+            logger.debug(f"Links before collapse attempt: {len(links_before)}")
+        except:
+            links_before = []
+
+        # Use SmartClicker for robust clicking
+        # Try selectors that SmartClicker can use
+        selector_candidates = [
+            '[class*="cursor-pointer"][class*="rounded-full"]',
+            'button:has-text("source")',
+            'button[class*="source"]'  # Additional CSS fallback
+        ]
+
+        # verify_click=False because we do custom verification via link count below
+        clicker = SmartClicker(page=page, verify_click=False, scroll_into_view=True, human_like_delay=True)
+
+        # Try each selector with SmartClicker
+        click_succeeded = False
+        for selector in selector_candidates:
+            try:
+                logger.debug(f"Trying SmartClicker with selector: {selector}")
+                result = await clicker.click(selector, timeout=5.0)
+                if result.success:
+                    logger.debug(f"Clicked sources button using {result.strategy_used.value} with selector: {selector}")
+                    click_succeeded = True
+                    break
+            except Exception as e:
+                logger.debug(f"Selector {selector} failed: {e}")
+                continue
+
+        if not click_succeeded:
+            logger.warning("SmartClicker failed with all selectors, trying direct element click...")
+            try:
+                await sources_button.click()
+                click_succeeded = True
+            except Exception as e:
+                logger.warning(f"Failed to click sources button: {e}")
+                return False
+
+        # Wait for collapse animation (increased to match expansion)
+        await human_delay('long')  # 1.0-2.5s for collapse animation (matches expansion timing)
+        await asyncio.sleep(1)      # Additional 1s buffer for DOM cleanup
+
+        # Verify collapse by checking link count decrease
+        try:
+            links_after = await page.select_all('a[href^="http"]')
+            links_decrease = len(links_before) - len(links_after)
+
+            # Debug log sample of links for troubleshooting
+            if links_before:
+                logger.debug(f"Sample links before collapse: {[l.attrs.get('href', 'no-href')[:50] for l in links_before[:5]]}")
+            if links_after:
+                logger.debug(f"Sample links after collapse: {[l.attrs.get('href', 'no-href')[:50] for l in links_after[:5]]}")
+
+            if links_decrease > 0:
+                logger.info(f"✓ Successfully collapsed sources: {len(links_before)} → {len(links_after)} links (-{links_decrease})")
+                return True
+            else:
+                logger.warning(f"Collapse click didn't reduce links: {len(links_before)} → {len(links_after)}")
+                return False
+
+        except Exception as e:
+            logger.debug(f"Could not verify collapse: {e}")
+            # Assume success if click didn't error
+            return True
 
     except Exception as e:
         logger.debug(f"Error collapsing sources: {e}")

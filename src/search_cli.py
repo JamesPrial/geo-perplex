@@ -341,13 +341,25 @@ async def main():
                 previous_url = page.url
                 logger.debug(f"Current URL before navigation: {previous_url}")
 
-                # Close sources panel before navigating to new chat to avoid DOM pollution
-                logger.debug("Closing sources panel before new chat...")
+                # Collapse sources before navigating to new chat (with retry logic)
                 collapse_result = await collapse_sources_if_expanded(page)
-                if collapse_result:
-                    logger.info("✓ Sources panel collapsed before new chat")
+
+                if not collapse_result:
+                    # First attempt failed - retry once after stabilization delay
+                    logger.warning("First collapse attempt failed - retrying once...")
+                    await human_delay('medium')  # 0.5-1.5s stabilization
+                    collapse_result = await collapse_sources_if_expanded(page)
+
+                    if not collapse_result:
+                        # Second attempt also failed - abort to prevent hangs
+                        logger.error(
+                            f"Failed to collapse sources after 2 attempts on query {iteration_num}/{args.query_count} - "
+                            f"aborting multi-query to prevent hangs. Successfully completed {iteration_num - 1} queries total."
+                        )
+                        logger.debug(f"Current page URL: {page.url}")
+                        break  # Exit the query loop
                 else:
-                    logger.debug("Sources panel already closed or not found")
+                    logger.info("✓ Sources panel collapsed before new chat")
 
                 # Navigate to new chat
                 try:
