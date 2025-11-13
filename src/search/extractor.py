@@ -37,6 +37,12 @@ _ERROR_PATTERNS = [
 _MAX_TEXT_CHECK_SIZE = 10000  # Only check first 10K characters
 
 
+__all__ = [
+    'extract_search_results',
+    'collapse_sources_if_expanded',
+]
+
+
 @dataclass
 class ExtractionResult:
     """
@@ -248,6 +254,76 @@ async def _expand_sources_if_collapsed(page: NodriverPage) -> bool:
 
     except Exception as e:
         logger.debug(f"Error expanding sources: {e}")
+        return False
+
+
+async def collapse_sources_if_expanded(page: NodriverPage) -> bool:
+    """
+    Attempt to collapse expanded sources section if present.
+
+    On Perplexity, sources can become expanded and persist across multiple searches
+    within the same chat session. This function finds and clicks the collapse button
+    (same button that was used to expand) to hide the source links and reduce
+    DOM pollution between searches.
+
+    Args:
+        page: Nodriver page object
+
+    Returns:
+        bool: True if sources were collapsed successfully, False if button not found
+              or sources are already collapsed
+    """
+    logger.debug("Attempting to collapse sources panel...")
+
+    try:
+        # Strategy 1: Text-based search (most reliable based on investigation)
+        # Looks for any element containing the word "sources"
+        logger.debug("Strategy 1: Trying text-based search for 'sources'...")
+        sources_button = None
+        try:
+            sources_button = await page.find("sources", best_match=True, timeout=2)
+            if sources_button:
+                logger.debug(f"Found sources button via text search: '{sources_button.text_all}'")
+        except Exception as e:
+            logger.debug(f"Text-based search failed: {e}")
+
+        # Strategy 2: CSS selectors (fallback)
+        if not sources_button:
+            logger.debug("Strategy 2: Trying CSS selectors from config...")
+            for selector in SELECTORS['sources'].get('collapse_button', [])[1:]:  # Skip first (text-based)
+                try:
+                    sources_button = await page.select(selector, timeout=1)
+                    if sources_button:
+                        logger.debug(f"Found sources button via selector: {selector}")
+                        break
+                except:
+                    continue
+
+        if not sources_button:
+            logger.debug("Sources button not found (already collapsed or not present)")
+            return False
+
+        button_text = sources_button.text_all.strip() if sources_button.text_all else "Unknown"
+        logger.info(f"Found sources button: '{button_text}'")
+
+        # Click the button to collapse sources
+        logger.debug("Clicking sources button to collapse...")
+        try:
+            await sources_button.click()
+        except Exception as e:
+            logger.warning(f"Failed to click sources button: {e}")
+            return False
+
+        # Wait for collapse (human-like delay + buffer for DOM updates)
+        # Wait for collapse (shorter than expansion since we only hide elements, no verification needed)
+        await human_delay('short')  # 0.3-0.7 seconds
+        await asyncio.sleep(0.5)     # Additional buffer
+
+        logger.info("✓ Sources panel collapsed successfully")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Error collapsing sources: {e}")
         return False
 
 

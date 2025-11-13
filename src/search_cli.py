@@ -23,7 +23,7 @@ from src.browser.auth import set_cookies, verify_authentication
 from src.browser.interactions import health_check, human_delay
 from src.browser.navigation import navigate_to_new_chat
 from src.search.executor import perform_search
-from src.search.extractor import extract_search_results, ExtractionResult
+from src.search.extractor import extract_search_results, ExtractionResult, collapse_sources_if_expanded
 from src.search.model_selector import select_model
 
 # Configure logging
@@ -341,6 +341,14 @@ async def main():
                 previous_url = page.url
                 logger.debug(f"Current URL before navigation: {previous_url}")
 
+                # Close sources panel before navigating to new chat to avoid DOM pollution
+                logger.debug("Closing sources panel before new chat...")
+                collapse_result = await collapse_sources_if_expanded(page)
+                if collapse_result:
+                    logger.info("✓ Sources panel collapsed before new chat")
+                else:
+                    logger.debug("Sources panel already closed or not found")
+
                 # Navigate to new chat
                 try:
                     nav_success = await navigate_to_new_chat(
@@ -458,7 +466,7 @@ async def main():
         # Cleanup
         if browser:
             logger.info('Cleaning up...')
-            browser.stop()
+            await browser.stop()
             logger.info('Browser closed')
 
 
