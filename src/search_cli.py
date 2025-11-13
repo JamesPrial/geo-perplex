@@ -341,25 +341,25 @@ async def main():
                 previous_url = page.url
                 logger.debug(f"Current URL before navigation: {previous_url}")
 
-                # Collapse sources before navigating to new chat (with retry logic)
+                # Close sources overlay before navigating to new chat (with retry logic)
                 collapse_result = await collapse_sources_if_expanded(page)
 
                 if not collapse_result:
                     # First attempt failed - retry once after stabilization delay
-                    logger.warning("First collapse attempt failed - retrying once...")
+                    logger.warning("First overlay close attempt failed - retrying once...")
                     await human_delay('medium')  # 0.5-1.5s stabilization
                     collapse_result = await collapse_sources_if_expanded(page)
 
                     if not collapse_result:
                         # Second attempt also failed - abort to prevent hangs
                         logger.error(
-                            f"Failed to collapse sources after 2 attempts on query {iteration_num}/{args.query_count} - "
+                            f"Failed to close sources overlay after 2 attempts on query {iteration_num}/{args.query_count} - "
                             f"aborting multi-query to prevent hangs. Successfully completed {iteration_num - 1} queries total."
                         )
                         logger.debug(f"Current page URL: {page.url}")
                         break  # Exit the query loop
                 else:
-                    logger.info("✓ Sources panel collapsed before new chat")
+                    logger.info("✓ Sources overlay closed before new chat")
 
                 # Navigate to new chat
                 try:
@@ -478,8 +478,17 @@ async def main():
         # Cleanup
         if browser:
             logger.info('Cleaning up...')
-            await browser.stop()
-            logger.info('Browser closed')
+            try:
+                stop_result = browser.stop()
+                if stop_result is not None:
+                    await stop_result
+                else:
+                    logger.debug('browser.stop() returned None, browser may already be closed')
+                logger.info('Browser closed')
+            except TypeError as e:
+                logger.warning(f'Browser stop returned non-awaitable (browser may already be closed): {e}')
+            except Exception as e:
+                logger.warning(f'Error during browser cleanup: {e}')
 
 
 def display_results(result) -> None:

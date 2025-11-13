@@ -260,97 +260,132 @@ async def _expand_sources_if_collapsed(page: NodriverPage) -> bool:
 
 async def collapse_sources_if_expanded(page: NodriverPage) -> bool:
     """
-    Attempt to collapse expanded sources section if present.
+    Attempt to collapse expanded sources overlay panel if present.
 
-    On Perplexity, sources can become expanded and persist across multiple searches
-    within the same chat session. This function finds and clicks the collapse button
-    (same button that was used to expand) to hide the source links and reduce
-    DOM pollution between searches.
+    On Perplexity, after expanding sources, an overlay panel appears on the right
+    side with an 'X' close button. This function finds and clicks that X button
+    to close the overlay and prevent DOM pollution between searches.
 
     Args:
         page: Nodriver page object
 
     Returns:
-        bool: True if sources were collapsed successfully, False if button not found
-              or sources are already collapsed
+        bool: True if sources overlay was closed successfully OR if overlay is not
+              present (success = no overlay blocking). False only if close was
+              attempted but failed (X button found but click failed).
     """
-    logger.debug("Attempting to collapse sources panel...")
+    logger.debug("Attempting to close sources overlay panel...")
 
     try:
-        # Strategy 1: Text-based search (most reliable based on investigation)
-        # Looks for any element containing the word "sources"
-        logger.debug("Strategy 1: Trying text-based search for 'sources'...")
-        sources_button = None
-        try:
-            sources_button = await page.find("sources", best_match=True, timeout=2)
-            if sources_button:
-                logger.debug(f"Found sources button via text search: '{sources_button.text_all}'")
-        except Exception as e:
-            logger.debug(f"Text-based search failed: {e}")
+        # Look for close button (X) in the sources overlay
+        # The overlay appears as a panel on the right side after clicking "X sources"
+        logger.debug("Looking for overlay close button (X)...")
+        close_button = None
+        selector_used = None
 
-        # Strategy 2: CSS selectors (fallback)
-        if not sources_button:
-            logger.debug("Strategy 2: Trying CSS selectors from config...")
-            for selector in SELECTORS['sources'].get('collapse_button', [])[1:]:  # Skip first (text-based)
+        # Strategy 1: Find by aria-label containing "close"
+        logger.debug("Strategy 1: Trying aria-label='close' or 'dismiss'...")
+        close_selectors = [
+            'button[aria-label*="close" i]',  # Case-insensitive "close"
+            'button[aria-label*="dismiss" i]',
+            '[role="button"][aria-label*="close" i]',
+            '[aria-label*="close" i]',
+        ]
+
+        for selector in close_selectors:
+            try:
+                close_button = await page.select(selector, timeout=1)
+                if close_button:
+                    aria_label = await close_button.get_attribute("aria-label")
+                    logger.debug(f"✓ Found close button via selector: {selector} - aria-label: '{aria_label}'")
+                    selector_used = selector
+                    break
+                else:
+                    logger.debug(f"✗ Selector '{selector}' found no elements")
+            except Exception as e:
+                logger.debug(f"✗ Selector '{selector}' failed: {e}")
+                continue
+
+        # Strategy 2: Find buttons containing X symbol
+        if not close_button:
+            logger.debug("Strategy 2: Trying text-based search for X symbols...")
+            x_symbols = ['×', '✕', 'X']
+            for symbol in x_symbols:
                 try:
-                    sources_button = await page.select(selector, timeout=1)
-                    if sources_button:
-                        logger.debug(f"Found sources button via selector: {selector}")
+                    close_button = await page.find(symbol, best_match=True, timeout=1)
+                    if close_button:
+                        button_text = close_button.text_all.strip() if close_button.text_all else ""
+                        logger.debug(f"✓ Found close button via text search: '{symbol}' - text: '{button_text}'")
+                        selector_used = f"text-search:{symbol}"
                         break
-                except:
+                except Exception as e:
+                    logger.debug(f"✗ Text search for '{symbol}' failed: {e}")
                     continue
 
-        if not sources_button:
-            logger.debug("Sources button not found (already collapsed or not present)")
-            return False
+        if not close_button:
+            logger.info("Close button not found - sources overlay not present (success)")
+            return True  # Success: no overlay to close
 
-        # Check if sources are already collapsed BEFORE clicking
-        button_text = sources_button.text_all.strip() if sources_button.text_all else ""
-        if re.match(r'^\s*\d+\s+sources?\s*$', button_text, re.IGNORECASE):
-            logger.debug(f"Sources already collapsed (button text: '{button_text}')")
-            return False
+        logger.info(f"Found overlay close button using '{selector_used}'")
 
-        logger.info(f"Found sources button: '{button_text}'")
-
-        # Count links before collapse
+        # Count links before collapse to determine if sources are actually expanded
         try:
             links_before = await page.select_all('a[href^="http"]')
-            logger.debug(f"Links before collapse attempt: {len(links_before)}")
+            logger.debug(f"Link count before collapse: {len(links_before)}")
+
+            # If link count is very low, sources are likely already collapsed
+            # Threshold: fewer than 5 links suggests collapsed state (no source links visible)
+            if len(links_before) < 5:
+                logger.info(f"Link count is low ({len(links_before)}), sources appear already collapsed - no action needed (success)")
+                return True
+
         except:
             links_before = []
+            logger.debug("Could not count links before collapse - proceeding with click attempt")
 
-        # Use SmartClicker for robust clicking
-        # Try selectors that SmartClicker can use
+        # Use SmartClicker for robust clicking on the close button
+        # The close button is typically an X icon button in the overlay
         selector_candidates = [
-            '[class*="cursor-pointer"][class*="rounded-full"]',
-            'button:has-text("source")',
-            'button[class*="source"]'  # Additional CSS fallback
+            'button[aria-label*="close" i]',  # Aria-label with "close"
+            '[role="button"][aria-label*="close" i]',
+            'button[aria-label*="dismiss" i]',
+            '[aria-label*="close" i]',  # Any element with close aria-label
         ]
 
         # verify_click=False because we do custom verification via link count below
+        logger.debug("Using SmartClicker with multiple selector candidates...")
         clicker = SmartClicker(page=page, verify_click=False, scroll_into_view=True, human_like_delay=True)
 
         # Try each selector with SmartClicker
         click_succeeded = False
+        click_strategy = None
+        click_selector = None
         for selector in selector_candidates:
             try:
-                logger.debug(f"Trying SmartClicker with selector: {selector}")
+                logger.debug(f"  Trying SmartClicker selector: {selector}")
                 result = await clicker.click(selector, timeout=5.0)
                 if result.success:
-                    logger.debug(f"Clicked sources button using {result.strategy_used.value} with selector: {selector}")
+                    logger.info(f"✓ Clicked sources button using strategy '{result.strategy_used.value}' with selector: {selector}")
                     click_succeeded = True
+                    click_strategy = result.strategy_used.value
+                    click_selector = selector
                     break
+                else:
+                    logger.debug(f"  ✗ Selector '{selector}' - SmartClicker found no elements")
             except Exception as e:
-                logger.debug(f"Selector {selector} failed: {e}")
+                logger.debug(f"  ✗ Selector '{selector}' failed: {e}")
                 continue
 
         if not click_succeeded:
-            logger.warning("SmartClicker failed with all selectors, trying direct element click...")
+            logger.warning("SmartClicker failed with all selectors, trying direct close button click as last resort...")
             try:
-                await sources_button.click()
+                await close_button.click()
                 click_succeeded = True
+                click_strategy = "direct-element-click"
+                click_selector = selector_used
+                logger.info(f"✓ Clicked close button using direct element click")
             except Exception as e:
-                logger.warning(f"Failed to click sources button: {e}")
+                logger.error(f"✗ Failed to click close button (all strategies exhausted): {e}")
                 return False
 
         # Wait for collapse animation (increased to match expansion)
@@ -358,30 +393,42 @@ async def collapse_sources_if_expanded(page: NodriverPage) -> bool:
         await asyncio.sleep(1)      # Additional 1s buffer for DOM cleanup
 
         # Verify collapse by checking link count decrease
+        logger.debug("Verifying collapse by checking link count...")
         try:
             links_after = await page.select_all('a[href^="http"]')
             links_decrease = len(links_before) - len(links_after)
+            logger.debug(f"Link count after collapse: {len(links_after)}")
 
             # Debug log sample of links for troubleshooting
             if links_before:
-                logger.debug(f"Sample links before collapse: {[l.attrs.get('href', 'no-href')[:50] for l in links_before[:5]]}")
+                logger.debug(f"Sample links before: {[l.attrs.get('href', 'no-href')[:50] for l in links_before[:3]]}")
             if links_after:
-                logger.debug(f"Sample links after collapse: {[l.attrs.get('href', 'no-href')[:50] for l in links_after[:5]]}")
+                logger.debug(f"Sample links after: {[l.attrs.get('href', 'no-href')[:50] for l in links_after[:3]]}")
 
             if links_decrease > 0:
-                logger.info(f"✓ Successfully collapsed sources: {len(links_before)} → {len(links_after)} links (-{links_decrease})")
+                logger.info(f"✓ Overlay closed: {len(links_before)} → {len(links_after)} links (-{links_decrease})")
+                logger.debug(f"Summary - Selector: '{selector_used}', Click: '{click_strategy}', Result: SUCCESS")
+                return True
+            elif links_decrease == 0:
+                logger.warning(f"⚠ Close button clicked but link count unchanged: {len(links_before)} → {len(links_after)}")
+                logger.warning(f"  Overlay may have already been closed or wrong button clicked")
+                logger.debug(f"Summary - Selector: '{selector_used}', Click: '{click_strategy}', Result: NO_CHANGE")
+                # Still return True since we tried and no overlay is blocking
                 return True
             else:
-                logger.warning(f"Collapse click didn't reduce links: {len(links_before)} → {len(links_after)}")
+                logger.warning(f"⚠ Link count increased: {len(links_before)} → {len(links_after)} (+{abs(links_decrease)})")
+                logger.warning(f"  Wrong button clicked - may have opened overlay instead of closing")
+                logger.debug(f"Summary - Selector: '{selector_used}', Click: '{click_strategy}', Result: WRONG_BUTTON")
                 return False
 
         except Exception as e:
-            logger.debug(f"Could not verify collapse: {e}")
+            logger.warning(f"Could not verify overlay close via link count: {e}")
+            logger.debug(f"Summary - Selector: '{selector_used}', Click: '{click_strategy}', Result: UNVERIFIED")
             # Assume success if click didn't error
             return True
 
     except Exception as e:
-        logger.debug(f"Error collapsing sources: {e}")
+        logger.debug(f"Error closing sources overlay: {e}")
         return False
 
 
