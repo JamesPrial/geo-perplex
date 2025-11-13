@@ -10,15 +10,27 @@ GEO-Perplex is a Python-based automation tool for researching Generative Engine 
 
 The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright or Selenium) for advanced bot detection bypass, and uses cookie-based authentication to avoid CAPTCHA and login rate limits.
 
-### Recent Major Improvements (2025-01-11)
+### Recent Major Improvements (Latest: 2025-01-13)
 
+**Core Automation:**
 - ✅ **Human-like behavior**: Character-by-character typing with variable delays
 - ✅ **Browser fingerprint randomization**: Random user agents and viewport sizes
 - ✅ **Enhanced reliability**: Retry logic, multiple extraction strategies, cookie verification
-- ✅ **Structured logging**: Comprehensive DEBUG/INFO/WARNING/ERROR logging
-- ✅ **Centralized configuration**: All constants moved to `src/config.py`
-- ✅ **Bug fixes**: Corrected all async/await issues with Nodriver properties
 - ✅ **Modular architecture**: Refactored monolithic code into clean, focused modules
+- ✅ **Multi-query automation**: `--auto-new-chat` flag for continuous querying with automatic navigation
+
+**Data Management:**
+- ✅ **Advanced source extraction**: Citation numbers and domain extraction for better source tracking
+- ✅ **JSON export**: `--save-json` flag for structured data export
+- ✅ **Comprehensive analysis**: Full-text search, advanced filtering, statistical analysis
+- ✅ **Multiple export formats**: CSV, JSON, Markdown with batch processing
+
+**Development:**
+- ✅ **Protocol-based type safety**: Custom Protocol classes for nodriver types
+- ✅ **Comprehensive testing**: pytest suite with 4,341 LOC, 80%+ coverage
+- ✅ **Centralized configuration**: All constants moved to `src/config.py`
+- ✅ **Structured logging**: Comprehensive DEBUG/INFO/WARNING/ERROR logging
+- ✅ **Claude Code integration**: Custom commands, specialized subagents, nodriver skill library
 
 ## Core Architecture
 
@@ -42,24 +54,40 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 
 ### Modular Architecture (Refactored from monolithic 856-line file)
 
+- **`src/types.py`**: Protocol definitions for type safety
+  - `NodriverPage` and `NodriverElement` protocols
+  - Enables type checking without coupling to nodriver internals
+  - Documents critical gotchas (text properties are NOT async)
+
 - **`src/browser/`**: Browser automation modules
-  - `manager.py` (84 lines): Browser lifecycle and fingerprint randomization
-  - `interactions.py` (128 lines): Human-like behavior utilities (`human_delay()`, `type_like_human()`, `find_interactive_element()`, `health_check()`)
-  - `auth.py` (132 lines): Cookie injection with retry logic and authentication verification
+  - `manager.py`: Browser lifecycle and fingerprint randomization
+  - `interactions.py`: Human-like behavior utilities (`human_delay()`, `type_like_human()`, `find_interactive_element()`, `health_check()`)
+  - `auth.py`: Cookie injection with retry logic and authentication verification
+  - `navigation.py`: Page navigation helpers (new chat, URL verification)
+  - `smart_click.py`: Multi-strategy clicking with 6 fallback methods
+  - `element_waiter.py`: Element waiting utilities with custom conditions
 
 - **`src/search/`**: Search execution modules
-  - `executor.py` (182 lines): Search execution with triple fallback submission
-  - `extractor.py` (215 lines): Result extraction with 3-tier strategy (marker-based → clean text → direct container)
-  - `model_selector.py` (NEW): AI model selection with smart clicking and verification
+  - `executor.py`: Search execution with triple fallback submission
+  - `extractor.py`: Result extraction with 3-tier strategy and enhanced source parsing
+  - `model_selector.py`: AI model selection with smart clicking and verification
 
 - **`src/utils/`**: Utility modules
-  - `decorators.py` (49 lines): Reusable `async_retry()` decorator with exponential backoff
+  - `decorators.py`: Reusable `async_retry()` decorator with exponential backoff
   - `cookies.py`: Cookie loading and validation
   - `storage.py`: SQLite database operations
+  - `json_export.py`: JSON export with filtering and metadata
+  - `export.py`: Multi-format export (CSV, Markdown)
+  - `statistics.py`: Statistical analysis and trends
+  - `db_maintenance.py`: Database cleanup and deduplication
 
-- **`src/analyze.py`**: Results analysis and comparison CLI tool
-  - Query and filter search results from database
+- **`src/analyze.py`**: Results analysis and comparison CLI tool (1,434 lines)
+  - Query and filter search results with advanced criteria
+  - Full-text search in answers, sources, and queries
   - Compare results across different AI models
+  - Statistical analysis and trend visualization
+  - Multiple export formats (JSON, CSV, Markdown)
+  - Database maintenance (deduplication, cleanup)
   - List unique queries and models
   - View recent search history
   - Display results with rich formatting
@@ -131,6 +159,30 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
     - Options container structure (menu vs listbox)
     - Allows non-technical users to update `src/config.py` without code changes
 
+15. **Protocol-Based Type Safety**: Custom `Protocol` classes in `src/types.py` enable type checking without coupling:
+    - `NodriverPage` and `NodriverElement` protocols
+    - Documents critical gotchas (text properties NOT async)
+    - Enables IDE autocomplete and static analysis
+    - Maintains flexibility for nodriver version updates
+
+16. **Multi-Query Automation**: `--auto-new-chat` flag enables continuous querying:
+    - Automatically clicks new chat button between searches
+    - Closes sources overlay before navigation (prevents hangs)
+    - URL change verification prevents duplicate searches
+    - Retry logic with exponential backoff for reliability
+
+17. **Enhanced Source Extraction**: Advanced source parsing with metadata:
+    - Citation numbers preserved from Perplexity UI
+    - Domain extraction from URLs for quick reference
+    - Structured JSON storage with text, URL, domain, citation number
+    - Fallback to index-based numbering when citation missing
+
+18. **Comprehensive Testing**: pytest suite with 4,341 LOC ensuring reliability:
+    - 80%+ code coverage with branch coverage enabled
+    - Test markers for unit, integration, slow tests
+    - In-memory database fixtures for fast testing
+    - Async test support via pytest-asyncio
+
 ## Common Development Commands
 
 ### Running Searches
@@ -153,28 +205,56 @@ python -m src.search_cli "What is Python?" --no-screenshot
 
 # Combine options: select model, custom query, skip screenshot
 python -m src.search_cli "Best CRM tools" --model claude-3 --no-screenshot
+
+# Multi-query automation (requires --auto-new-chat flag)
+python -m src.search_cli "What is GEO?" --auto-new-chat --query-count 5
+
+# Save results to JSON
+python -m src.search_cli "Best AI tools" --save-json --json-output-dir ./exports
+
+# Combined: multi-query with model selection and JSON export
+python -m src.search_cli "query" --model gpt-4 --auto-new-chat --query-count 3 --save-json
 ```
 
 ### Analyzing Stored Results
 
 ```bash
-# View recent searches
+# Basic queries
 python -m src.analyze recent --limit 10
-
-# List all unique queries
 python -m src.analyze list-queries
-
-# List all unique models
 python -m src.analyze list-models
 
-# Query by search text
+# Query by search text or model
 python -m src.analyze query --query "What is GEO?" --full
-
-# Query by model
 python -m src.analyze model --model gpt-4 --limit 20
 
 # Compare models for same query
 python -m src.analyze compare --query "What are the best project management tools?" --full
+
+# Advanced filtering with multiple criteria
+python -m src.analyze filter --model gpt-4 --start-date 2025-01-01 --success-only
+python -m src.analyze filter --end-date 2025-01-31 --min-execution-time 20 --limit 50
+
+# Full-text search in answers, sources, or queries
+python -m src.analyze search "machine learning" --in answers --limit 10
+python -m src.analyze search "python" --in all --model gpt-4 --full
+
+# Statistics and trends
+python -m src.analyze stats                    # Overall database statistics
+python -m src.analyze stats-model --model gpt-4  # Model-specific statistics
+python -m src.analyze stats-trends --metric execution_time --period day
+
+# Export in multiple formats
+python -m src.analyze export --output results.json
+python -m src.analyze export-csv results.csv --model gpt-4 --success-only
+python -m src.analyze export-md report.md --full --query "What is GEO?"
+python -m src.analyze export-batch ./exports/ --format csv --group-by model
+
+# Database maintenance
+python -m src.analyze duplicates --exact        # Find duplicate queries
+python -m src.analyze cleanup --dry-run         # Preview cleanup operations
+python -m src.analyze cleanup --remove-failed   # Remove failed searches
+python -m src.analyze info                      # Show database information
 ```
 
 
@@ -225,6 +305,46 @@ The tool supports active AI model selection via the `--model` parameter. To set 
 - The UI text in MODEL_MAPPING should match exactly what appears in Perplexity's dropdown
 - If Perplexity updates their UI, run the discovery script again to get new selectors
 - Model selection is optional - omit `--model` to use Perplexity's default selection
+
+### Testing
+
+The project has a comprehensive test suite with 4,341 lines of test code and 80%+ coverage:
+
+```bash
+# Run all tests with coverage
+pytest
+
+# Run specific test markers
+pytest -m unit          # Fast unit tests only (< 1s each)
+pytest -m integration   # Integration tests with external dependencies
+pytest -m slow          # Long-running tests (browser automation)
+
+# Run specific test file
+pytest tests/test_search.py
+pytest tests/test_analyze.py
+
+# Run with verbose output
+pytest -v
+
+# Generate HTML coverage report
+pytest --cov=src --cov-report=html
+# View at htmlcov/index.html
+
+# Run tests in parallel (faster, requires pytest-xdist)
+pytest -n auto
+```
+
+**Test Organization:**
+- **16 test modules** covering all major components
+- **Markers**: `unit`, `integration`, `slow`, `asyncio`
+- **Fixtures**: In-memory database, temp files, sample data
+- **Coverage**: Source code (`src/`) with branch coverage enabled
+
+**Test Configuration (`pytest.ini`):**
+- Async support via `pytest-asyncio`
+- Automatic test discovery in `tests/` directory
+- Coverage reports with HTML output
+- Warning filters for known third-party issues
 
 ## Important Technical Details
 
@@ -445,6 +565,71 @@ The codebase includes several helper functions organized by module:
 - Minimum content threshold: 50 characters
 - Prevents premature extraction of incomplete answers
 
+## Protocol-Based Type Safety (`src/types.py`)
+
+The codebase uses Python's `Protocol` classes to enable type safety without tight coupling to nodriver internals:
+
+### Why Protocols?
+
+**Problem**: Nodriver objects don't have type stubs, making IDE autocomplete and static analysis difficult.
+
+**Solution**: Custom `Protocol` definitions that document the interface we actually use:
+
+```python
+from typing import Protocol
+
+class NodriverElement(Protocol):
+    """Protocol for nodriver Element objects"""
+    # CRITICAL: text and text_all are PROPERTIES, not async methods
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def text_all(self) -> str: ...
+
+    async def click(self) -> None: ...
+    async def send_keys(self, text: str) -> None: ...
+    # ... other methods
+```
+
+### Benefits
+
+1. **IDE Support**: Full autocomplete and type hints in VS Code, PyCharm, etc.
+2. **Documentation**: Protocol definitions document critical gotchas (like text properties)
+3. **Flexibility**: No direct dependency on nodriver internals
+4. **Refactoring Safety**: Type checker catches usage errors before runtime
+
+### Critical Gotchas Documented in Protocols
+
+**Text Properties Are NOT Async:**
+```python
+# ❌ Wrong (but type checker catches this!)
+answer_text = await element.text_all
+
+# ✅ Correct
+answer_text = element.text_all
+```
+
+**send_keys() Types Literal Strings:**
+```python
+# ❌ Wrong - types literal "Enter" text
+await element.send_keys('Enter')
+
+# ✅ Correct - presses Enter key
+await element.send_keys('\n')
+```
+
+### Usage Throughout Codebase
+
+All functions that accept nodriver objects use these protocols:
+```python
+async def extract_text(element: NodriverElement) -> str:
+    """Type-safe extraction with protocol"""
+    return element.text_all  # IDE knows this is a property!
+```
+
+This approach makes the critical nodriver gotchas visible in type signatures and documentation.
+
 ## Nodriver-Specific Gotchas
 
 ### Critical: Keyboard Input Handling
@@ -497,6 +682,73 @@ The tool uses Python's `logging` module with 4 levels:
 Configure logging level in `LOGGING_CONFIG['level']` (default: 'INFO')
 
 View debug logs: Change to `'DEBUG'` in `src/config.py` and rerun
+
+## Claude Code Integration
+
+This project includes comprehensive Claude Code integration for AI-assisted development:
+
+### Custom Slash Commands (`.claude/commands/`)
+
+**`/implement`** - Coordinated subagent workflow for feature implementation:
+- Automatically launches specialized agents in sequence
+- Code planning → writing → reviewing → testing → committing
+- Zero-tolerance quality gates at each stage
+- Usage: `/implement <feature description>`
+
+### Specialized Subagents (`.claude/agents/`)
+
+**`python-code-writer`** - Clean, Pythonic code implementation:
+- Prioritizes readability and maintainability
+- Follows PEP 8 and project conventions
+- Creates focused, well-documented code
+
+**`python-code-reviewer`** - Expert code review with actionable feedback:
+- Checks code quality and best practices
+- Identifies potential bugs and improvements
+- Suggests optimizations and refactoring
+
+**`python-test-runner`** - Automated test execution with concise summaries:
+- Runs pytest suite with coverage
+- Provides clear pass/fail status
+- Highlights failing tests with context
+
+**`nodriver-debugger`** - Nodriver-specific debugging specialist:
+- Investigates browser automation issues
+- Creates diagnostic scripts
+- Provides solutions for common nodriver gotchas
+
+### Nodriver Skill Library (`.claude/skills/nodriver/`)
+
+Comprehensive nodriver development assistance:
+- **Scripts**: Quick start, Docker setup, profile manager, smart click, safe typing, element waiting
+- **Templates**: Basic scraper, login automation, data extractor
+- **References**: Common patterns, known issues, migration guide
+- **Docker Support**: Production-ready Dockerfile and compose configuration
+
+**Using the Nodriver Skill:**
+```
+# Activate in Claude Code
+/skill nodriver
+
+# Access battle-tested patterns and solutions
+# Get help with anti-detection, CDP integration, and more
+```
+
+### Development Workflow
+
+**Typical feature development with `/implement`:**
+1. User requests feature: `/implement <description>`
+2. **Plan agent** analyzes requirements and creates implementation plan
+3. **Code writer** implements the feature following project conventions
+4. **Code reviewer** checks quality and suggests improvements
+5. **Test runner** verifies all tests pass
+6. **Git operations** creates commit with proper formatting
+
+**Benefits:**
+- Consistent code quality across all contributions
+- Automatic testing before commits
+- Nodriver expertise always available
+- Reduced debugging time with specialized agents
 
 ## Limitations and Gotchas
 
