@@ -203,15 +203,26 @@ SELECTORS = {
         'main [class*="response" i]',
     ],
     'sources': {
-        'tier1_primary': '[data-testid*="source"] a',
-        'tier2_citations': '[data-testid*="citation"] a, footer [class*="citation"] a',
+        # Collapsible sources button selectors (button that says "X sources")
+        'collapse_button': [
+            'sources',              # Text-based search (most reliable) - use with page.find(text, best_match=True)
+            'button:has-text("source")',  # CSS with text match
+            '[class*="cursor-pointer"][class*="rounded-full"]',  # Class-based (from investigation)
+        ],
+        # Source link selectors after expansion
+        'tier1_primary': 'a[href^="http"]',  # All HTTP/HTTPS links (works after expansion)
+        'tier2_citations': '[class*="citation"] a, footer [class*="citation"] a',
         'tier3_references': 'main article a[href^="http"], [class*="reference"] a',
         'exclude_patterns': [
             'perplexity.ai',      # Internal links
             '/login',             # Auth links
             '/upgrade',           # Marketing links
             '/settings',          # Settings links
-            '/pricing'            # Pricing links
+            '/pricing',           # Pricing links
+            '/search',            # Search page links
+            '/spaces',            # Spaces links
+            '/home',              # Home page links
+            '/discover',          # Discover page links
         ]
     },
 }

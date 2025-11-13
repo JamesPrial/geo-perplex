@@ -164,6 +164,93 @@ def _is_excluded_url(url: str, exclude_patterns: List[str]) -> bool:
     return False
 
 
+async def _expand_sources_if_collapsed(page: NodriverPage) -> bool:
+    """
+    Attempt to expand collapsed sources section if present.
+
+    On Perplexity, sources are initially collapsed behind a button that says
+    "X sources" (e.g., "10 sources"). This function finds and clicks that button
+    to reveal the source links.
+
+    Args:
+        page: Nodriver page object
+
+    Returns:
+        bool: True if sources were expanded successfully, False if button not found
+              or already expanded
+    """
+    logger.debug("Checking for collapsed sources button...")
+
+    try:
+        # Strategy 1: Text-based search (most reliable based on investigation)
+        # Looks for any element containing the word "sources"
+        sources_button = None
+        try:
+            sources_button = await page.find("sources", best_match=True, timeout=2)
+            if sources_button:
+                logger.debug(f"Found sources button via text search: '{sources_button.text_all}'")
+        except Exception as e:
+            logger.debug(f"Text-based search failed: {e}")
+
+        # Strategy 2: CSS selectors (fallback)
+        if not sources_button:
+            for selector in SELECTORS['sources'].get('collapse_button', [])[1:]:  # Skip first (text-based)
+                try:
+                    sources_button = await page.select(selector, timeout=1)
+                    if sources_button:
+                        logger.debug(f"Found sources button via selector: {selector}")
+                        break
+                except:
+                    continue
+
+        if not sources_button:
+            logger.debug("No collapsed sources button found - sources may already be expanded or not present")
+            return False
+
+        button_text = sources_button.text_all.strip() if sources_button.text_all else "Unknown"
+        logger.info(f"Found collapsed sources button: '{button_text}'")
+
+        # Count links before clicking
+        try:
+            links_before = await page.select_all('a[href^="http"]')
+            logger.debug(f"Links visible before expansion: {len(links_before)}")
+        except:
+            links_before = []
+
+        # Click the button to expand sources
+        logger.debug("Clicking sources button...")
+        try:
+            await sources_button.click()
+        except Exception as e:
+            logger.warning(f"Failed to click sources button: {e}")
+            return False
+
+        # Wait for expansion (human-like delay + buffer for DOM updates)
+        await human_delay('long')  # 1-2.5 seconds
+        await asyncio.sleep(1)     # Additional buffer
+
+        # Verify expansion by checking for increased link count
+        try:
+            links_after = await page.select_all('a[href^="http"]')
+            links_increase = len(links_after) - len(links_before)
+
+            if links_increase > 0:
+                logger.info(f"✓ Successfully expanded sources: {len(links_before)} → {len(links_after)} links (+{links_increase})")
+                return True
+            else:
+                logger.warning(f"Sources button clicked but no link increase detected ({len(links_before)} → {len(links_after)})")
+                return False
+
+        except Exception as e:
+            logger.debug(f"Could not verify expansion: {e}")
+            # Assume success if click didn't error
+            return True
+
+    except Exception as e:
+        logger.debug(f"Error expanding sources: {e}")
+        return False
+
+
 async def _extract_sources(page: NodriverPage) -> List[Dict[str, str]]:
     """
     Extract sources from the page using multi-tier fallback strategy.
@@ -201,6 +288,9 @@ async def _extract_sources(page: NodriverPage) -> List[Dict[str, str]]:
     validate_external = SOURCES_CONFIG.get('validate_external_only', True)
     exclude_patterns = SELECTORS['sources'].get('exclude_patterns', [])
     tier_threshold = max(1, int(SOURCES_CONFIG.get('tier_fallback_threshold', 3)))
+
+    # NEW: Expand collapsed sources before extraction
+    await _expand_sources_if_collapsed(page)
 
     try:
         # Tier 1: Primary source elements (most reliable)
