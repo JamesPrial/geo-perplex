@@ -359,16 +359,12 @@ MODEL_SELECTOR = {
 # Maps user-friendly CLI names to possible text variations in Perplexity's UI
 # Values are lists to support multiple text variations
 MODEL_MAPPING = {
-    'gpt-4': ['GPT-4', 'GPT 4', 'gpt-4', 'GPT4'],
-    'gpt-4-turbo': ['GPT-4 Turbo', 'GPT 4 Turbo', 'GPT-4 turbo'],
-    'claude': ['Claude', 'claude'],
-    'claude-3': ['Claude 3', 'Claude-3', 'Claude 3 Opus', 'Claude 3 Sonnet'],
-    'claude-opus': ['Claude 3 Opus', 'Claude Opus', 'Opus'],
-    'claude-sonnet': ['Claude 3 Sonnet', 'Claude Sonnet', 'Sonnet'],
     'sonar': ['Sonar', 'sonar'],
-    'sonar-pro': ['Sonar Pro', 'Sonar-Pro'],
-    'gemini': ['Gemini', 'gemini', 'Gemini Pro'],
-    'default': ['Default', 'default'],
+    'gpt-5': ['GPT-5', 'GPT 5', 'gpt-5', 'GPT5'],
+    'gpt-5.1': ['GPT-5.1', 'GPT 5.1', 'gpt-5.1'],
+    'claude-sonnet-4.5': ['Claude Sonnet 4.5', 'Claude-Sonnet-4.5', 'Sonnet 4.5', 'Claude Sonnet 4.5'],
+    'gemini-2.5-pro': ['Gemini 2.5 Pro', 'Gemini-2.5-Pro', 'Gemini 2.5 Pro', 'Gemini 2.5'],
+    'grok-4': ['Grok 4', 'Grok-4', 'Grok 4', 'Grok4'],
 }
 
 # New Chat Button Configuration
