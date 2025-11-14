@@ -75,6 +75,7 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
 - **`src/utils/`**: Utility modules
   - `decorators.py`: Reusable `async_retry()` decorator with exponential backoff
   - `cookies.py`: Cookie loading and validation
+  - `prompts_loader.py`: JSON prompts file loading and validation (NEW)
   - `storage.py`: SQLite database operations
   - `json_export.py`: JSON export with filtering and metadata
   - `export.py`: Multi-format export (CSV, Markdown)
@@ -210,11 +211,23 @@ python -m src.search_cli "Best CRM tools" --model claude-3 --no-screenshot
 # Multi-query automation (requires --auto-new-chat flag)
 python -m src.search_cli "What is GEO?" --auto-new-chat --query-count 5
 
+# File-based multi-prompt automation (NEW - requires --auto-new-chat flag)
+python -m src.search_cli --prompts-file prompts.json --auto-new-chat
+
+# File-based prompts from stdin
+cat prompts.json | python -m src.search_cli --prompts-file - --auto-new-chat
+
+# Limit iterations from prompts file
+python -m src.search_cli --prompts-file prompts.json --auto-new-chat --query-count 3
+
 # Save results to JSON
 python -m src.search_cli "Best AI tools" --save-json --json-output-dir ./exports
 
 # Combined: multi-query with model selection and JSON export
 python -m src.search_cli "query" --model gpt-4 --auto-new-chat --query-count 3 --save-json
+
+# Combined: file-based prompts with JSON export
+python -m src.search_cli --prompts-file prompts.json --auto-new-chat --save-json
 ```
 
 ### Analyzing Stored Results
@@ -283,6 +296,77 @@ stats = cleanup_on_startup()
 if stats['killed'] > 0:
     print(f"Cleaned up {stats['killed']} orphaned browsers")
 ```
+
+### Prompts File Format
+
+The `--prompts-file` flag enables bulk automation by reading multiple prompts from a JSON file. This is useful for:
+- Model comparison (same query across different AI models)
+- Batch GEO research (multiple queries automatically)
+- A/B testing different query formulations
+
+**JSON Format:**
+```json
+[
+  {
+    "query": "What is Generative Engine Optimization?",
+    "model": "gpt-4",
+    "no_screenshot": false
+  },
+  {
+    "query": "Best CRM tools for startups",
+    "model": "claude-3"
+  },
+  {
+    "query": "How does RAG work?"
+  }
+]
+```
+
+**Field Reference:**
+- `query` (required): Search query text (string, non-empty)
+- `model` (optional): AI model to use for this query (must be valid model name)
+- `no_screenshot` (optional): Skip screenshot for this prompt (boolean)
+
+**Available Models:** `gpt-4`, `gpt-4-turbo`, `claude`, `claude-3`, `claude-opus`, `claude-sonnet`, `sonar`, `sonar-pro`, `gemini`, `default`
+
+**Usage Examples:**
+
+```bash
+# Model comparison - same query, different models
+# prompts.json:
+[
+  {"query": "What is GEO?", "model": "gpt-4"},
+  {"query": "What is GEO?", "model": "claude-3"},
+  {"query": "What is GEO?", "model": "gemini"}
+]
+python -m src.search_cli --prompts-file prompts.json --auto-new-chat
+
+# Batch research - different queries
+# research.json:
+[
+  {"query": "Best project management tools for startups"},
+  {"query": "Top CRM platforms 2025"},
+  {"query": "AI-powered analytics tools"}
+]
+python -m src.search_cli --prompts-file research.json --auto-new-chat --save-json
+
+# Mixed settings - per-prompt customization
+# mixed.json:
+[
+  {"query": "Quick query", "no_screenshot": true},
+  {"query": "Detailed query", "model": "gpt-4"},
+  {"query": "Another query", "model": "claude-3", "no_screenshot": false}
+]
+python -m src.search_cli --prompts-file mixed.json --auto-new-chat
+```
+
+**Behavior Notes:**
+- Requires `--auto-new-chat` flag (error otherwise)
+- Per-prompt `model` overrides global `--model` flag
+- Per-prompt `no_screenshot` overrides global `--no-screenshot` flag
+- `--query-count N` limits to first N prompts from file
+- Maximum 1000 prompts per file (configurable in `src/config.py`)
+- Stdin support: use `--prompts-file -` to read from stdin
 
 ### Cookie Setup
 

@@ -291,6 +291,13 @@ DATABASE_CONFIG = {
     'timeout': 10.0,
 }
 
+# Prompts file configuration
+PROMPTS_FILE_CONFIG = {
+    'max_prompts': 1000,  # Maximum number of prompts per file
+    'required_fields': ['query'],  # Fields that must always be present
+    'optional_fields': ['model', 'no_screenshot'],  # Fields that are optional
+}
+
 # User agent strings for randomization
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',

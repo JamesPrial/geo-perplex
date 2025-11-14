@@ -17,6 +17,7 @@ from src.utils.storage import save_search_result
 from src.utils.json_export import save_result_to_json
 from src.utils.shutdown_handler import ShutdownHandler
 from src.utils.process_cleanup import cleanup_on_startup
+from src.utils.prompts_loader import load_prompts_from_file
 from src.config import SCREENSHOT_CONFIG, LOGGING_CONFIG, MODEL_MAPPING
 
 # Import from new modular structure
@@ -101,6 +102,13 @@ def parse_arguments() -> argparse.Namespace:
         type=int,
         default=1,
         help='Number of queries to execute with --auto-new-chat (default: 1, use 2+ for multiple queries with same search text)'
+    )
+
+    parser.add_argument(
+        '--prompts-file',
+        help='Path to JSON file containing prompts (one object per prompt), or "-" for stdin. '
+             'Each prompt must have "query" field. Optional fields: "model", "no_screenshot". '
+             'Requires --auto-new-chat flag. Example: --prompts-file prompts.json'
     )
 
     return parser.parse_args()
@@ -241,15 +249,49 @@ async def main():
         logger.error('Use: python -m src.search_cli "query" --auto-new-chat --query-count N')
         sys.exit(1)
 
+    if args.prompts_file and not args.auto_new_chat:
+        logger.error('--prompts-file requires --auto-new-chat flag')
+        logger.error('Use: python -m src.search_cli --prompts-file <file> --auto-new-chat')
+        sys.exit(1)
+
     if args.auto_new_chat and args.multi_query:
         logger.warning('Both --auto-new-chat and --multi-query set; using --auto-new-chat mode')
+
+    # Load prompts from file or create single-prompt list
+    prompts = []
+    if args.prompts_file:
+        try:
+            all_prompts = load_prompts_from_file(args.prompts_file)
+
+            # Warn if positional query was also provided
+            if search_query != 'What is Generative Engine Optimization?':  # DEFAULT_QUERY
+                logger.warning('Ignoring positional query argument - using prompts from file')
+
+            # Apply query_count limit if specified
+            if args.query_count and args.query_count < len(all_prompts):
+                logger.info(f'Limiting to first {args.query_count} prompts (out of {len(all_prompts)} in file)')
+                prompts = all_prompts[:args.query_count]
+            else:
+                prompts = all_prompts
+
+            logger.info(f'Loaded {len(prompts)} prompts from {args.prompts_file}')
+
+        except Exception as e:
+            logger.error(f'Failed to load prompts file: {e}')
+            sys.exit(1)
+    else:
+        # Single query mode (existing behavior - backward compatibility)
+        prompts = [{
+            'query': search_query,
+            'model': model if model else None,
+            'no_screenshot': args.no_screenshot
+        }]
+        logger.info(f'Running single query: "{search_query}"')
 
     logger.info('=' * 60)
     logger.info('Perplexity.ai Search Automation')
     logger.info('=' * 60)
-    logger.info(f'Query: "{search_query}"')
-    if model:
-        logger.info(f'Model: {model}')
+    logger.info(f'Total prompts to process: {len(prompts)}')
 
     # Clean up any orphaned browser processes from previous crashed runs
     logger.info('Checking for orphaned browser processes from previous runs...')
@@ -301,62 +343,63 @@ async def main():
 
             logger.info('Successfully authenticated!')
 
-            # Step 7: Select AI model if specified
-            if model:
-                logger.info(f'Selecting AI model: {model}')
-                try:
-                    success = await select_model(page, model)
-                    if not success:
-                        raise RuntimeError(f'Failed to select model: {model}')
-                    logger.info(f'Successfully selected model: {model}')
-                except ValueError as e:
-                    logger.error(f'Invalid model name: {e}')
-                    available = list(MODEL_MAPPING.keys())
-                    logger.error(f'Available models: {", ".join(available)}')
-                    raise
-                except Exception as e:
-                    logger.error(f'Model selection failed: {e}')
-                    raise
-
-            # Step 8: Prepare screenshot directory
+            # Step 7: Prepare screenshot directory
             screenshot_dir = Path(SCREENSHOT_CONFIG['directory'])
             screenshot_dir.mkdir(exist_ok=True)
 
-            # Step 9: Execute first search workflow
-            workflow_result = await execute_single_search_workflow(
-                page=page,
-                search_query=search_query,
-                model=model,
-                save_screenshot=save_screenshot,
-                screenshot_dir=screenshot_dir,
-                args=args,
-                iteration=1
-            )
+            # Step 8: Execute prompts loop
+            # Iterate through all prompts (either from file or single query)
+            for prompt_idx, prompt_config in enumerate(prompts):
+                iteration_num = prompt_idx + 1
 
-            # Update success and error_message from workflow result
-            success = workflow_result['success']
-            error_message = workflow_result['error']
+                # Extract per-prompt settings
+                current_query = prompt_config['query']
+                current_model = prompt_config.get('model', model)  # Fallback to CLI --model
+                current_no_screenshot = prompt_config.get('no_screenshot', args.no_screenshot)
 
-            # Step 10: Handle multi-query loop with auto-new-chat
-            if args.auto_new_chat and args.query_count > 1:
-                remaining_queries = args.query_count - 1
+                # Log prompt info
                 logger.info(f'\n{"="*60}')
-                logger.info(f'AUTO-NEW-CHAT: Executing {remaining_queries} additional queries')
+                logger.info(f'Query {iteration_num}/{len(prompts)}')
+                logger.info(f'Query: "{current_query}"')
+                if current_model:
+                    logger.info(f'Model: {current_model}')
                 logger.info(f'{"="*60}\n')
 
-                loop_start_time = time.time()
+                # First iteration: select model if specified
+                if iteration_num == 1:
+                    if current_model:
+                        logger.info(f'Selecting AI model: {current_model}')
+                        try:
+                            model_success = await select_model(page, current_model)
+                            if not model_success:
+                                raise RuntimeError(f'Failed to select model: {current_model}')
+                            logger.info(f'Successfully selected model: {current_model}')
+                        except ValueError as e:
+                            logger.error(f'Invalid model name: {e}')
+                            available = list(MODEL_MAPPING.keys())
+                            logger.error(f'Available models: {", ".join(available)}')
+                            raise
+                        except Exception as e:
+                            logger.error(f'Model selection failed: {e}')
+                            raise
 
-                for i in range(remaining_queries):
-                    # Check if shutdown was requested
-                    if shutdown_handler.is_shutdown_requested():
-                        logger.info(f'Shutdown requested - stopping after {i+1} completed queries')
-                        break
+                    # Execute first search workflow
+                    workflow_result = await execute_single_search_workflow(
+                        page=page,
+                        search_query=current_query,
+                        model=current_model,
+                        save_screenshot=not current_no_screenshot,
+                        screenshot_dir=screenshot_dir,
+                        args=args,
+                        iteration=iteration_num
+                    )
 
-                    iteration_num = i + 2
-                    logger.info(f'\n{"="*60}')
-                    logger.info(f'--- Starting Query {iteration_num}/{args.query_count} ---')
-                    logger.info(f'{"="*60}\n')
+                    # Update success and error_message from workflow result
+                    success = workflow_result['success']
+                    error_message = workflow_result['error']
 
+                # Subsequent iterations: navigate to new chat and re-select model if needed
+                elif len(prompts) > 1:  # Only enter multi-query logic if more than 1 prompt
                     # Store current URL for independent verification
                     previous_url = page.url
                     logger.debug(f"Current URL before navigation: {previous_url}")
@@ -373,11 +416,11 @@ async def main():
                         if not collapse_result:
                             # Second attempt also failed - abort to prevent hangs
                             logger.error(
-                                f"Failed to close sources overlay after 2 attempts on query {iteration_num}/{args.query_count} - "
+                                f"Failed to close sources overlay after 2 attempts on query {iteration_num}/{len(prompts)} - "
                                 f"aborting multi-query to prevent hangs. Successfully completed {iteration_num - 1} queries total."
                             )
                             logger.debug(f"Current page URL: {page.url}")
-                            break  # Exit the query loop
+                            break  # Exit the prompts loop
                     else:
                         logger.info("✓ Sources overlay closed before new chat")
 
@@ -427,15 +470,24 @@ async def main():
                         logger.info('Shutdown requested after navigation')
                         break
 
-                    # Re-select model if specified (UI resets after new chat)
-                    if model:
-                        logger.info(f'Re-selecting model: {model}')
+                    # Re-select model if different from previous (UI resets after new chat)
+                    if current_model and current_model != model:
+                        logger.info(f'Re-selecting model: {current_model}')
                         try:
                             # type: ignore[arg-type] - page is Any type from nodriver, select_model expects NodriverPage protocol
-                            await select_model(page, model)
-                            logger.info(f'Model {model} selected for query {iteration_num}')
+                            await select_model(page, current_model)
+                            logger.info(f'Model {current_model} selected for query {iteration_num}')
                         except Exception as e:
-                            logger.error(f'Failed to select model {model}: {e}')
+                            logger.error(f'Failed to select model {current_model}: {e}')
+                            logger.error('Stopping multi-query execution')
+                            break
+                    elif current_model:
+                        logger.info(f'Re-selecting model: {current_model}')
+                        try:
+                            await select_model(page, current_model)
+                            logger.info(f'Model {current_model} selected for query {iteration_num}')
+                        except Exception as e:
+                            logger.error(f'Failed to select model {current_model}: {e}')
                             logger.error('Stopping multi-query execution')
                             break
 
@@ -452,30 +504,27 @@ async def main():
                     try:
                         workflow_result = await execute_single_search_workflow(
                             page=page,
-                            search_query=search_query,
-                            model=model,  # Reuse selected model
-                            save_screenshot=save_screenshot,
+                            search_query=current_query,
+                            model=current_model,
+                            save_screenshot=not current_no_screenshot,
                             screenshot_dir=screenshot_dir,
                             args=args,
                             iteration=iteration_num
                         )
 
-                        elapsed = time.time() - loop_start_time
                         if workflow_result['success']:
-                            logger.info(f'Query {iteration_num}/{args.query_count} completed successfully ({elapsed:.1f}s total elapsed)')
+                            logger.info(f'Query {iteration_num}/{len(prompts)} completed successfully')
                         else:
-                            logger.warning(f'Query {iteration_num}/{args.query_count} completed with issues: {workflow_result.get("error", "Unknown error")} ({elapsed:.1f}s total elapsed)')
+                            logger.warning(f'Query {iteration_num}/{len(prompts)} completed with issues: {workflow_result.get("error", "Unknown error")}')
 
                     except Exception as e:
                         # Workflow error - log and continue to next query
                         # This allows collecting partial results even if individual queries fail
-                        logger.error(f'Query {iteration_num}/{args.query_count} failed with error: {e}')
+                        logger.error(f'Query {iteration_num}/{len(prompts)} failed with error: {e}')
                         # Continue to next iteration to attempt remaining queries
 
-                total_elapsed = time.time() - loop_start_time
-                logger.info(f'\nCompleted all {args.query_count} queries in {total_elapsed:.1f}s')
-
-            elif args.multi_query:
+            # Handle multi-query mode (manual new chat clicks) after prompts loop
+            if args.multi_query:
                 logger.info('Multi-query mode: Browser will remain open')
                 logger.info('You can manually click the new chat button and perform more searches')
                 logger.info('Press Ctrl+C when done')
