@@ -80,6 +80,7 @@ The tool automates searches on Perplexity.ai using **Nodriver** (not Playwright 
   - `export.py`: Multi-format export (CSV, Markdown)
   - `statistics.py`: Statistical analysis and trends
   - `db_maintenance.py`: Database cleanup and deduplication
+  - `process_cleanup.py`: Detection and cleanup of orphaned browser processes
 
 - **`src/analyze.py`**: Results analysis and comparison CLI tool (1,434 lines)
   - Query and filter search results with advanced criteria
@@ -257,6 +258,31 @@ python -m src.analyze cleanup --remove-failed   # Remove failed searches
 python -m src.analyze info                      # Show database information
 ```
 
+### Process Cleanup
+
+```bash
+# Cleanup orphaned browser processes from crashed runs
+
+# Preview what would be cleaned (safe, recommended first)
+python scripts/cleanup_browsers.py --dry-run
+
+# Actually cleanup orphaned browsers
+python scripts/cleanup_browsers.py
+
+# List orphaned browsers without cleaning
+python scripts/cleanup_browsers.py --list-only
+
+# Verbose output for debugging
+python scripts/cleanup_browsers.py --verbose
+
+# Programmatic usage in Python
+from src.utils.process_cleanup import cleanup_on_startup
+
+# Safe startup cleanup (automatic detection and termination)
+stats = cleanup_on_startup()
+if stats['killed'] > 0:
+    print(f"Cleaned up {stats['killed']} orphaned browsers")
+```
 
 ### Cookie Setup
 

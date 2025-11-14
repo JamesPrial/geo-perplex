@@ -15,10 +15,12 @@ from typing import Any, Optional, Dict
 from src.utils.cookies import load_cookies, validate_auth_cookies
 from src.utils.storage import save_search_result
 from src.utils.json_export import save_result_to_json
+from src.utils.shutdown_handler import ShutdownHandler
+from src.utils.process_cleanup import cleanup_on_startup
 from src.config import SCREENSHOT_CONFIG, LOGGING_CONFIG, MODEL_MAPPING
 
 # Import from new modular structure
-from src.browser.manager import launch_browser
+from src.browser.manager import launch_browser, browser_context
 from src.browser.auth import set_cookies, verify_authentication
 from src.browser.interactions import health_check, human_delay
 from src.browser.navigation import navigate_to_new_chat
@@ -221,238 +223,283 @@ async def execute_single_search_workflow(
 
 async def main():
     """Main search automation function"""
-    browser = None
     start_time = time.time()
     success = True
     error_message = None
 
+    # Parse command line arguments (outside try block for early validation)
+    args = parse_arguments()
+    search_query = args.query
+    model = args.model
+    save_screenshot = not args.no_screenshot
+    save_json = args.save_json
+    json_output_dir = args.json_output_dir
+
+    # Validate flag combinations
+    if args.query_count > 1 and not args.auto_new_chat:
+        logger.error('--query-count requires --auto-new-chat flag')
+        logger.error('Use: python -m src.search_cli "query" --auto-new-chat --query-count N')
+        sys.exit(1)
+
+    if args.auto_new_chat and args.multi_query:
+        logger.warning('Both --auto-new-chat and --multi-query set; using --auto-new-chat mode')
+
+    logger.info('=' * 60)
+    logger.info('Perplexity.ai Search Automation')
+    logger.info('=' * 60)
+    logger.info(f'Query: "{search_query}"')
+    if model:
+        logger.info(f'Model: {model}')
+
+    # Clean up any orphaned browser processes from previous crashed runs
+    logger.info('Checking for orphaned browser processes from previous runs...')
+    cleanup_stats = cleanup_on_startup()
+    if cleanup_stats.get('killed', 0) > 0:
+        logger.info(f"Cleaned up {cleanup_stats['killed']} orphaned browser process(es)")
+
+    # Initialize shutdown handler for graceful Ctrl+C handling
+    shutdown_handler = ShutdownHandler()
+    shutdown_handler.register_signal_handlers()
+    logger.debug('Shutdown handler registered for SIGINT and SIGTERM')
+
     try:
-        # Parse command line arguments
-        args = parse_arguments()
-        search_query = args.query
-        model = args.model
-        save_screenshot = not args.no_screenshot
-        save_json = args.save_json
-        json_output_dir = args.json_output_dir
-
-        # Validate flag combinations
-        if args.query_count > 1 and not args.auto_new_chat:
-            logger.error('--query-count requires --auto-new-chat flag')
-            logger.error('Use: python -m src.search_cli "query" --auto-new-chat --query-count N')
-            sys.exit(1)
-
-        if args.auto_new_chat and args.multi_query:
-            logger.warning('Both --auto-new-chat and --multi-query set; using --auto-new-chat mode')
-
-        logger.info('=' * 60)
-        logger.info('Perplexity.ai Search Automation')
-        logger.info('=' * 60)
-        logger.info(f'Query: "{search_query}"')
-        if model:
-            logger.info(f'Model: {model}')
-
         # Step 1: Load and validate cookies
         logger.info('Loading authentication cookies...')
         cookies = load_cookies()
         validate_auth_cookies(cookies)
 
-        # Step 2: Launch browser with randomized fingerprint
+        # Step 2: Launch browser with randomized fingerprint (using context manager)
         logger.info('Launching browser (headed mode with fingerprint randomization)...')
-        browser = await launch_browser()
+        async with browser_context() as browser:
+            # Note: Context manager handles browser cleanup automatically
+            # No need to register with shutdown handler (prevents double cleanup)
+            logger.debug('Browser managed by context manager')
 
-        # Step 3: Get first page
-        page = browser.main_tab
+            # Step 3: Get first page
+            page = browser.main_tab
 
-        # Step 4: Set cookies BEFORE navigating
-        logger.info('Setting authentication cookies...')
-        await set_cookies(page, cookies)
-        logger.info('Cookies added to browser')
+            # Step 4: Set cookies BEFORE navigating
+            logger.info('Setting authentication cookies...')
+            await set_cookies(page, cookies)
+            logger.info('Cookies added to browser')
 
-        # Step 5: Navigate to Perplexity with cookies already set
-        logger.info('Navigating to Perplexity.ai...')
-        await page.get('https://www.perplexity.ai')
-        await human_delay('medium')
+            # Step 5: Navigate to Perplexity with cookies already set
+            logger.info('Navigating to Perplexity.ai...')
+            await page.get('https://www.perplexity.ai')
+            await human_delay('medium')
 
-        # Perform health check
-        health = await health_check(page)
-        logger.debug(f"Page health: {health}")
+            # Perform health check
+            health = await health_check(page)
+            logger.debug(f"Page health: {health}")
 
-        # Step 6: Verify authentication
-        logger.info('Verifying authentication status...')
-        is_authenticated = await verify_authentication(page)
+            # Step 6: Verify authentication
+            logger.info('Verifying authentication status...')
+            is_authenticated = await verify_authentication(page)
 
-        if not is_authenticated:
-            raise Exception('Authentication failed - cookies may be expired or invalid')
+            if not is_authenticated:
+                raise Exception('Authentication failed - cookies may be expired or invalid')
 
-        logger.info('Successfully authenticated!')
+            logger.info('Successfully authenticated!')
 
-        # Step 7: Select AI model if specified
-        if model:
-            logger.info(f'Selecting AI model: {model}')
-            try:
-                success = await select_model(page, model)
-                if not success:
-                    raise RuntimeError(f'Failed to select model: {model}')
-                logger.info(f'Successfully selected model: {model}')
-            except ValueError as e:
-                logger.error(f'Invalid model name: {e}')
-                available = list(MODEL_MAPPING.keys())
-                logger.error(f'Available models: {", ".join(available)}')
-                raise
-            except Exception as e:
-                logger.error(f'Model selection failed: {e}')
-                raise
+            # Step 7: Select AI model if specified
+            if model:
+                logger.info(f'Selecting AI model: {model}')
+                try:
+                    success = await select_model(page, model)
+                    if not success:
+                        raise RuntimeError(f'Failed to select model: {model}')
+                    logger.info(f'Successfully selected model: {model}')
+                except ValueError as e:
+                    logger.error(f'Invalid model name: {e}')
+                    available = list(MODEL_MAPPING.keys())
+                    logger.error(f'Available models: {", ".join(available)}')
+                    raise
+                except Exception as e:
+                    logger.error(f'Model selection failed: {e}')
+                    raise
 
-        # Step 8: Prepare screenshot directory
-        screenshot_dir = Path(SCREENSHOT_CONFIG['directory'])
-        screenshot_dir.mkdir(exist_ok=True)
+            # Step 8: Prepare screenshot directory
+            screenshot_dir = Path(SCREENSHOT_CONFIG['directory'])
+            screenshot_dir.mkdir(exist_ok=True)
 
-        # Step 9: Execute first search workflow
-        workflow_result = await execute_single_search_workflow(
-            page=page,
-            search_query=search_query,
-            model=model,
-            save_screenshot=save_screenshot,
-            screenshot_dir=screenshot_dir,
-            args=args,
-            iteration=1
-        )
+            # Step 9: Execute first search workflow
+            workflow_result = await execute_single_search_workflow(
+                page=page,
+                search_query=search_query,
+                model=model,
+                save_screenshot=save_screenshot,
+                screenshot_dir=screenshot_dir,
+                args=args,
+                iteration=1
+            )
 
-        # Update success and error_message from workflow result
-        success = workflow_result['success']
-        error_message = workflow_result['error']
+            # Update success and error_message from workflow result
+            success = workflow_result['success']
+            error_message = workflow_result['error']
 
-        # Step 10: Handle multi-query loop with auto-new-chat
-        if args.auto_new_chat and args.query_count > 1:
-            remaining_queries = args.query_count - 1
-            logger.info(f'\n{"="*60}')
-            logger.info(f'AUTO-NEW-CHAT: Executing {remaining_queries} additional queries')
-            logger.info(f'{"="*60}\n')
-
-            loop_start_time = time.time()
-
-            for i in range(remaining_queries):
-                iteration_num = i + 2
+            # Step 10: Handle multi-query loop with auto-new-chat
+            if args.auto_new_chat and args.query_count > 1:
+                remaining_queries = args.query_count - 1
                 logger.info(f'\n{"="*60}')
-                logger.info(f'--- Starting Query {iteration_num}/{args.query_count} ---')
+                logger.info(f'AUTO-NEW-CHAT: Executing {remaining_queries} additional queries')
                 logger.info(f'{"="*60}\n')
 
-                # Store current URL for independent verification
-                previous_url = page.url
-                logger.debug(f"Current URL before navigation: {previous_url}")
+                loop_start_time = time.time()
 
-                # Close sources overlay before navigating to new chat (with retry logic)
-                collapse_result = await collapse_sources_if_expanded(page)
+                for i in range(remaining_queries):
+                    # Check if shutdown was requested
+                    if shutdown_handler.is_shutdown_requested():
+                        logger.info(f'Shutdown requested - stopping after {i+1} completed queries')
+                        break
 
-                if not collapse_result:
-                    # First attempt failed - retry once after stabilization delay
-                    logger.warning("First overlay close attempt failed - retrying once...")
-                    await human_delay('medium')  # 0.5-1.5s stabilization
+                    iteration_num = i + 2
+                    logger.info(f'\n{"="*60}')
+                    logger.info(f'--- Starting Query {iteration_num}/{args.query_count} ---')
+                    logger.info(f'{"="*60}\n')
+
+                    # Store current URL for independent verification
+                    previous_url = page.url
+                    logger.debug(f"Current URL before navigation: {previous_url}")
+
+                    # Close sources overlay before navigating to new chat (with retry logic)
                     collapse_result = await collapse_sources_if_expanded(page)
 
                     if not collapse_result:
-                        # Second attempt also failed - abort to prevent hangs
-                        logger.error(
-                            f"Failed to close sources overlay after 2 attempts on query {iteration_num}/{args.query_count} - "
-                            f"aborting multi-query to prevent hangs. Successfully completed {iteration_num - 1} queries total."
-                        )
-                        logger.debug(f"Current page URL: {page.url}")
-                        break  # Exit the query loop
-                else:
-                    logger.info("✓ Sources overlay closed before new chat")
+                        # First attempt failed - retry once after stabilization delay
+                        logger.warning("First overlay close attempt failed - retrying once...")
+                        await human_delay('medium')  # 0.5-1.5s stabilization
+                        collapse_result = await collapse_sources_if_expanded(page)
 
-                # Navigate to new chat
-                try:
-                    nav_success = await navigate_to_new_chat(
-                        page,
-                        verify=True,
-                        previous_url=previous_url  # Pass for enhanced verification
-                    )
-
-                    if not nav_success:
-                        # Navigation failure indicates browser/UI issue - stop all remaining queries
-                        logger.error(f'Failed to navigate to new chat for query {iteration_num}')
-                        logger.error('Navigation verification returned False')
-                        logger.error('Stopping multi-query execution')
-                        break
-
-                    # INDEPENDENT VERIFICATION: Check URL actually changed
-                    current_url = page.url
-                    logger.debug(f"Current URL after navigation: {current_url}")
-
-                    if current_url == previous_url:
-                        logger.error(f'Navigation claimed success but URL did not change!')
-                        logger.error(f'  Previous URL: {previous_url}')
-                        logger.error(f'  Current URL:  {current_url}')
-                        logger.error(f'This indicates navigation verification gave false positive')
-                        logger.error('Stopping multi-query execution to prevent duplicate searches on same page')
-                        break
-
-                    logger.info(f'URL changed to new chat page')
-                    logger.debug(f'  New URL: {current_url}')
-
-                except Exception as e:
-                    # Critical navigation error - cannot continue
-                    logger.error(f'Navigation error for query {iteration_num}: {e}')
-                    logger.error('Stopping multi-query execution')
-                    break
-
-                # Re-select model if specified (UI resets after new chat)
-                if model:
-                    logger.info(f'Re-selecting model: {model}')
-                    try:
-                        # type: ignore[arg-type] - page is Any type from nodriver, select_model expects NodriverPage protocol
-                        await select_model(page, model)
-                        logger.info(f'Model {model} selected for query {iteration_num}')
-                    except Exception as e:
-                        logger.error(f'Failed to select model {model}: {e}')
-                        logger.error('Stopping multi-query execution')
-                        break
-
-                # Small delay before next search
-                await human_delay('short')
-
-                # Execute search workflow
-                logger.info(f'Executing search workflow for query {iteration_num}...')
-                try:
-                    workflow_result = await execute_single_search_workflow(
-                        page=page,
-                        search_query=search_query,
-                        model=model,  # Reuse selected model
-                        save_screenshot=save_screenshot,
-                        screenshot_dir=screenshot_dir,
-                        args=args,
-                        iteration=iteration_num
-                    )
-
-                    elapsed = time.time() - loop_start_time
-                    if workflow_result['success']:
-                        logger.info(f'Query {iteration_num}/{args.query_count} completed successfully ({elapsed:.1f}s total elapsed)')
+                        if not collapse_result:
+                            # Second attempt also failed - abort to prevent hangs
+                            logger.error(
+                                f"Failed to close sources overlay after 2 attempts on query {iteration_num}/{args.query_count} - "
+                                f"aborting multi-query to prevent hangs. Successfully completed {iteration_num - 1} queries total."
+                            )
+                            logger.debug(f"Current page URL: {page.url}")
+                            break  # Exit the query loop
                     else:
-                        logger.warning(f'Query {iteration_num}/{args.query_count} completed with issues: {workflow_result.get("error", "Unknown error")} ({elapsed:.1f}s total elapsed)')
+                        logger.info("✓ Sources overlay closed before new chat")
 
-                except Exception as e:
-                    # Workflow error - log and continue to next query
-                    # This allows collecting partial results even if individual queries fail
-                    logger.error(f'Query {iteration_num}/{args.query_count} failed with error: {e}')
-                    # Continue to next iteration to attempt remaining queries
+                    # Check shutdown after navigation
+                    if shutdown_handler.is_shutdown_requested():
+                        logger.info('Shutdown requested after closing overlay')
+                        break
 
-            total_elapsed = time.time() - loop_start_time
-            logger.info(f'\nCompleted all {args.query_count} queries in {total_elapsed:.1f}s')
+                    # Navigate to new chat
+                    try:
+                        nav_success = await navigate_to_new_chat(
+                            page,
+                            verify=True,
+                            previous_url=previous_url  # Pass for enhanced verification
+                        )
 
-        elif args.multi_query:
+                        if not nav_success:
+                            # Navigation failure indicates browser/UI issue - stop all remaining queries
+                            logger.error(f'Failed to navigate to new chat for query {iteration_num}')
+                            logger.error('Navigation verification returned False')
+                            logger.error('Stopping multi-query execution')
+                            break
+
+                        # INDEPENDENT VERIFICATION: Check URL actually changed
+                        current_url = page.url
+                        logger.debug(f"Current URL after navigation: {current_url}")
+
+                        if current_url == previous_url:
+                            logger.error(f'Navigation claimed success but URL did not change!')
+                            logger.error(f'  Previous URL: {previous_url}')
+                            logger.error(f'  Current URL:  {current_url}')
+                            logger.error(f'This indicates navigation verification gave false positive')
+                            logger.error('Stopping multi-query execution to prevent duplicate searches on same page')
+                            break
+
+                        logger.info(f'URL changed to new chat page')
+                        logger.debug(f'  New URL: {current_url}')
+
+                    except Exception as e:
+                        # Critical navigation error - cannot continue
+                        logger.error(f'Navigation error for query {iteration_num}: {e}')
+                        logger.error('Stopping multi-query execution')
+                        break
+
+                    # Check shutdown after navigation
+                    if shutdown_handler.is_shutdown_requested():
+                        logger.info('Shutdown requested after navigation')
+                        break
+
+                    # Re-select model if specified (UI resets after new chat)
+                    if model:
+                        logger.info(f'Re-selecting model: {model}')
+                        try:
+                            # type: ignore[arg-type] - page is Any type from nodriver, select_model expects NodriverPage protocol
+                            await select_model(page, model)
+                            logger.info(f'Model {model} selected for query {iteration_num}')
+                        except Exception as e:
+                            logger.error(f'Failed to select model {model}: {e}')
+                            logger.error('Stopping multi-query execution')
+                            break
+
+                    # Check shutdown before workflow execution
+                    if shutdown_handler.is_shutdown_requested():
+                        logger.info('Shutdown requested before workflow execution')
+                        break
+
+                    # Small delay before next search
+                    await human_delay('short')
+
+                    # Execute search workflow
+                    logger.info(f'Executing search workflow for query {iteration_num}...')
+                    try:
+                        workflow_result = await execute_single_search_workflow(
+                            page=page,
+                            search_query=search_query,
+                            model=model,  # Reuse selected model
+                            save_screenshot=save_screenshot,
+                            screenshot_dir=screenshot_dir,
+                            args=args,
+                            iteration=iteration_num
+                        )
+
+                        elapsed = time.time() - loop_start_time
+                        if workflow_result['success']:
+                            logger.info(f'Query {iteration_num}/{args.query_count} completed successfully ({elapsed:.1f}s total elapsed)')
+                        else:
+                            logger.warning(f'Query {iteration_num}/{args.query_count} completed with issues: {workflow_result.get("error", "Unknown error")} ({elapsed:.1f}s total elapsed)')
+
+                    except Exception as e:
+                        # Workflow error - log and continue to next query
+                        # This allows collecting partial results even if individual queries fail
+                        logger.error(f'Query {iteration_num}/{args.query_count} failed with error: {e}')
+                        # Continue to next iteration to attempt remaining queries
+
+                total_elapsed = time.time() - loop_start_time
+                logger.info(f'\nCompleted all {args.query_count} queries in {total_elapsed:.1f}s')
+
+            elif args.multi_query:
                 logger.info('Multi-query mode: Browser will remain open')
                 logger.info('You can manually click the new chat button and perform more searches')
                 logger.info('Press Ctrl+C when done')
 
-                # Keep browser alive until user interrupts
+                # Keep browser alive until user interrupts or shutdown requested
                 try:
-                    while True:
+                    while not shutdown_handler.is_shutdown_requested():
                         await asyncio.sleep(1)
                 except KeyboardInterrupt:
-                    logger.info('User interrupted, closing browser...')
+                    logger.info('User interrupted, cleanup will proceed...')
+                    # Let the exception propagate to outer handler
+                    raise
+
+    except KeyboardInterrupt:
+        logger.warning('\nInterrupted by user')
+        # Don't sys.exit() here - let it propagate for cleanup
 
     except Exception as error:
+        # Check if this is a shutdown-related exception
+        if shutdown_handler.is_shutdown_requested():
+            logger.info('Exception during shutdown - this is expected')
+            return
+
+        # Otherwise, handle as normal error
         logger.error(f'Error: {str(error)}', exc_info=True)
         success = False
         error_message = str(error)
@@ -474,21 +521,11 @@ async def main():
             logger.warning(f'Could not save failed result to database: {db_error}')
 
         raise
+
     finally:
-        # Cleanup
-        if browser:
-            logger.info('Cleaning up...')
-            try:
-                stop_result = browser.stop()
-                if stop_result is not None:
-                    await stop_result
-                else:
-                    logger.debug('browser.stop() returned None, browser may already be closed')
-                logger.info('Browser closed')
-            except TypeError as e:
-                logger.warning(f'Browser stop returned non-awaitable (browser may already be closed): {e}')
-            except Exception as e:
-                logger.warning(f'Error during browser cleanup: {e}')
+        # Trigger shutdown handler cleanup
+        logger.debug('Running shutdown handler cleanup...')
+        await shutdown_handler.cleanup()
 
 
 def display_results(result) -> None:
@@ -566,7 +603,7 @@ if __name__ == '__main__':
         # Run the async main function
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.warning('\nInterrupted by user')
+        # Just exit quietly - cleanup already done in main()
         sys.exit(0)
     except Exception as e:
         logger.error(f'\nFatal error: {e}', exc_info=True)

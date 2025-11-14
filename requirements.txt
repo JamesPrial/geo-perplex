@@ -1,4 +1,5 @@
 nodriver>=0.40
+psutil>=5.9.0  # Process management and cleanup
 
 # Testing dependencies
 pytest>=8.0.0

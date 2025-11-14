@@ -18,41 +18,39 @@ DB_PATH = Path(__file__).parent.parent.parent / 'search_results.db'
 
 def init_database() -> None:
     """Initialize the database with required schema"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
 
-    # Create search_results table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS search_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT NOT NULL,
-            model TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            answer_text TEXT,
-            sources TEXT,
-            screenshot_path TEXT,
-            execution_time_seconds REAL,
-            success BOOLEAN DEFAULT 1,
-            error_message TEXT
-        )
-    ''')
+        # Create search_results table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS search_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                model TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                answer_text TEXT,
+                sources TEXT,
+                screenshot_path TEXT,
+                execution_time_seconds REAL,
+                success BOOLEAN DEFAULT 1,
+                error_message TEXT
+            )
+        ''')
 
-    # Create indexes for common queries
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_query ON search_results(query)
-    ''')
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_model ON search_results(model)
-    ''')
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_timestamp ON search_results(timestamp)
-    ''')
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_query_model ON search_results(query, model)
-    ''')
-
-    conn.commit()
-    conn.close()
+        # Create indexes for common queries
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_query ON search_results(query)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_model ON search_results(model)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_timestamp ON search_results(timestamp)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_query_model ON search_results(query, model)
+        ''')
+        # Context auto-commits and closes
 
 
 def save_search_result(
@@ -83,31 +81,30 @@ def save_search_result(
     """
     init_database()  # Ensure database exists
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
     # Convert sources list to JSON string
     sources_json = json.dumps(sources)
 
-    cursor.execute('''
-        INSERT INTO search_results (
-            query, model, answer_text, sources, screenshot_path,
-            execution_time_seconds, success, error_message
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        query,
-        model,
-        answer_text,
-        sources_json,
-        screenshot_path,
-        execution_time,
-        success,
-        error_message
-    ))
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
 
-    result_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+        cursor.execute('''
+            INSERT INTO search_results (
+                query, model, answer_text, sources, screenshot_path,
+                execution_time_seconds, success, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            query,
+            model,
+            answer_text,
+            sources_json,
+            screenshot_path,
+            execution_time,
+            success,
+            error_message
+        ))
+
+        result_id = cursor.lastrowid
+        # Context auto-commits and closes
 
     return result_id
 
@@ -123,25 +120,25 @@ def get_results_by_query(query: str, model: Optional[str] = None) -> List[Dict]:
     Returns:
         List of result dictionaries
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-    if model:
-        cursor.execute('''
-            SELECT * FROM search_results
-            WHERE query = ? AND model = ?
-            ORDER BY timestamp DESC
-        ''', (query, model))
-    else:
-        cursor.execute('''
-            SELECT * FROM search_results
-            WHERE query = ?
-            ORDER BY timestamp DESC
-        ''', (query,))
+        if model:
+            cursor.execute('''
+                SELECT * FROM search_results
+                WHERE query = ? AND model = ?
+                ORDER BY timestamp DESC
+            ''', (query, model))
+        else:
+            cursor.execute('''
+                SELECT * FROM search_results
+                WHERE query = ?
+                ORDER BY timestamp DESC
+            ''', (query,))
 
-    rows = cursor.fetchall()
-    conn.close()
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     # Convert to list of dicts with parsed JSON
     results = []
@@ -168,19 +165,19 @@ def get_results_by_model(model: str, limit: int = 50) -> List[Dict]:
     Returns:
         List of result dictionaries
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-    cursor.execute('''
-        SELECT * FROM search_results
-        WHERE model = ?
-        ORDER BY timestamp DESC
-        LIMIT ?
-    ''', (model, limit))
+        cursor.execute('''
+            SELECT * FROM search_results
+            WHERE model = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (model, limit))
 
-    rows = cursor.fetchall()
-    conn.close()
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     results = []
     for row in rows:
@@ -205,18 +202,18 @@ def compare_models_for_query(query: str) -> Dict[str, List[Dict]]:
     Returns:
         Dictionary mapping model names to lists of results
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-    cursor.execute('''
-        SELECT * FROM search_results
-        WHERE query = ?
-        ORDER BY model, timestamp DESC
-    ''', (query,))
+        cursor.execute('''
+            SELECT * FROM search_results
+            WHERE query = ?
+            ORDER BY model, timestamp DESC
+        ''', (query,))
 
-    rows = cursor.fetchall()
-    conn.close()
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     # Group by model
     results_by_model = {}
@@ -246,18 +243,18 @@ def get_recent_results(limit: int = 50) -> List[Dict]:
     Returns:
         List of result dictionaries
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-    cursor.execute('''
-        SELECT * FROM search_results
-        ORDER BY timestamp DESC
-        LIMIT ?
-    ''', (limit,))
+        cursor.execute('''
+            SELECT * FROM search_results
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (limit,))
 
-    rows = cursor.fetchall()
-    conn.close()
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     results = []
     for row in rows:
@@ -274,33 +271,33 @@ def get_recent_results(limit: int = 50) -> List[Dict]:
 
 def get_unique_queries() -> List[str]:
     """Get list of all unique queries in the database"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
 
-    cursor.execute('''
-        SELECT DISTINCT query FROM search_results
-        ORDER BY query
-    ''')
+        cursor.execute('''
+            SELECT DISTINCT query FROM search_results
+            ORDER BY query
+        ''')
 
-    queries = [row[0] for row in cursor.fetchall()]
-    conn.close()
+        queries = [row[0] for row in cursor.fetchall()]
+        # Connection auto-commits and closes
 
     return queries
 
 
 def get_unique_models() -> List[str]:
     """Get list of all unique models in the database"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
 
-    cursor.execute('''
-        SELECT DISTINCT model FROM search_results
-        WHERE model IS NOT NULL
-        ORDER BY model
-    ''')
+        cursor.execute('''
+            SELECT DISTINCT model FROM search_results
+            WHERE model IS NOT NULL
+            ORDER BY model
+        ''')
 
-    models = [row[0] for row in cursor.fetchall()]
-    conn.close()
+        models = [row[0] for row in cursor.fetchall()]
+        # Connection auto-commits and closes
 
     return models
 
@@ -345,10 +342,6 @@ def get_results_by_date_range(
     Returns:
         List of result dictionaries ordered by timestamp descending
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     conditions = []
     params = []
 
@@ -380,9 +373,13 @@ def get_results_by_date_range(
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)
 
@@ -398,10 +395,6 @@ def get_results_by_success_status(success: bool = True, limit: Optional[int] = N
     Returns:
         List of result dictionaries ordered by timestamp descending
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     # Validate limit is a positive integer
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError("limit must be a positive integer")
@@ -419,9 +412,13 @@ def get_results_by_success_status(success: bool = True, limit: Optional[int] = N
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)
 
@@ -442,10 +439,6 @@ def get_results_by_execution_time(
     Returns:
         List of result dictionaries ordered by execution_time_seconds ascending
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     conditions = ['execution_time_seconds IS NOT NULL']
     params = []
 
@@ -473,9 +466,13 @@ def get_results_by_execution_time(
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)
 
@@ -496,10 +493,6 @@ def search_in_answers(
     Returns:
         List of result dictionaries ordered by timestamp descending
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     # Validate limit is a positive integer
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError("limit must be a positive integer")
@@ -523,9 +516,13 @@ def search_in_answers(
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)
 
@@ -546,10 +543,6 @@ def search_in_sources(
     Returns:
         List of result dictionaries with matching sources
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     # Validate limit is a positive integer
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError("limit must be a positive integer")
@@ -572,9 +565,13 @@ def search_in_sources(
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)
 
@@ -590,10 +587,6 @@ def search_queries_fuzzy(pattern: str, limit: Optional[int] = None) -> List[Dict
     Returns:
         List of result dictionaries ordered by timestamp descending
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     # Validate limit is a positive integer
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError("limit must be a positive integer")
@@ -609,9 +602,13 @@ def search_queries_fuzzy(pattern: str, limit: Optional[int] = None) -> List[Dict
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)
 
@@ -655,10 +652,6 @@ def get_results_advanced_filter(
     Raises:
         ValueError: If order_by is not in whitelist or limit is invalid
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
     conditions = []
     params = []
 
@@ -730,8 +723,12 @@ def get_results_advanced_filter(
         query += ' LIMIT ?'
         params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        # Connection auto-commits and closes
 
     return _parse_results(rows)

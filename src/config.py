@@ -383,3 +383,12 @@ NEW_CHAT_CONFIG = {
     ],
     'verification_poll_interval': 0.5,  # How often to poll for old content removal (seconds)
 }
+
+# Shutdown handling configuration
+SHUTDOWN_CONFIG = {
+    'cleanup_timeout': 5.0,  # Timeout per cleanup operation (seconds)
+    'browser_cleanup_timeout': 5.0,  # Specific timeout for browser cleanup (seconds)
+    'browser_kill_timeout': 3.0,  # Timeout for graceful browser termination (seconds)
+    'enable_orphan_cleanup': True,  # Enable cleanup of orphaned browsers on startup
+    'orphan_cleanup_patterns': ['chrome', 'chromium'],  # Browser process names to detect
+}
